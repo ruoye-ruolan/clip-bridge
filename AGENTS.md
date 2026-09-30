@@ -21,7 +21,8 @@ Run from the repository root on macOS:
 - `make -C prototype/macos build`: compile Swift helpers into ignored `build/`.
 - `make -C prototype/macos test`: run Python and Swift tests without network uploads.
 - `make -C prototype/macos test-python`: run the Python tests only.
-- `./clipbridge configure`: guided setup; checks SSH and creates/checks the destination.
+- Edit `~/.config/clipbridge/config.json` using the example; restart after changes.
+- `./clipbridge configure`: optional setup wizard.
 - `./clipbridge doctor`: read-only connection and environment diagnostics.
 - `./clipbridge start` / `stop` / `status`: background service controls.
 - `./clipbridge run`: foreground monitoring with the saved user configuration.

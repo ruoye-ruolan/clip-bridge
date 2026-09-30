@@ -1,6 +1,6 @@
 # ClipBridge macOS Command-Line Toolkit
 
-This developer toolkit uploads newly copied images to an SSH host and returns their remote paths. Configuration and service management use a single `clipbridge` command. There is no packaged release yet; run it from this checkout.
+This developer toolkit uploads newly copied images to an SSH host and returns their remote paths. Edit a JSON configuration file and use `clipbridge` commands to check it and manage the service. There is no packaged release yet; run it from this checkout.
 
 ## Requirements
 
@@ -14,33 +14,70 @@ If tools are missing, install Command Line Tools with `xcode-select --install`. 
 
 Development checks have run with Python 3.14.7, Swift 6.4 and macOS 27.0.1 on Apple silicon. Other versions and Intel Macs remain unverified.
 
-## Quick Start
+## Configure with a File
 
-From the repository root:
+From the repository root, copy the example without overwriting existing settings:
 
 ```sh
-./clipbridge configure
-./clipbridge doctor
+mkdir -p ~/.config/clipbridge
+cp -n prototype/macos/config.example.json ~/.config/clipbridge/config.json
+chmod 600 ~/.config/clipbridge/config.json
 ```
 
-The wizard lists literal SSH aliases from your SSH configuration and included files. Choose a number or enter an alias manually. Press Enter for the default destination: `.local/share/clipbridge/images` under the **remote** user's home directory. Setup checks SSH access, creates the directory if necessary and creates/removes a temporary write probe before saving locally. It never starts clipboard monitoring.
+Open `~/.config/clipbridge/config.json` in your preferred editor. It contains two fields:
 
-Keep an interactive `ssh YOUR_ALIAS` session open. To enable background uploads and automatic startup at login:
+```json
+{
+  "ssh_host": "dev-server",
+  "remote_directory": "/home/example/.local/share/clipbridge/images"
+}
+```
+
+| Field | Value |
+| --- | --- |
+| `ssh_host` | The literal SSH alias you use in `ssh ALIAS`, as configured in `~/.ssh/config` |
+| `remote_directory` | An absolute directory on that remote host, owned by or writable to the SSH user |
+
+Replace both example values. Use valid JSON with double quotes and no comments or trailing commas. Direct file configuration requires an explicit absolute remote path; it does not expand `~`, `$HOME` or environment variables. No credentials belong in this file: authentication continues to use your SSH configuration and agent.
+
+Create the remote directory before running `doctor`. For the sample above, the command would be:
+
+```sh
+ssh dev-server 'umask 077; mkdir -p -- /home/example/.local/share/clipbridge/images'
+```
+
+Substitute your actual alias and directory in that command too. Then keep an interactive `ssh YOUR_ALIAS` session open and run:
+
+```sh
+./clipbridge doctor
+./clipbridge run
+```
+
+`doctor` checks without changing the remote directory. `run` compiles helpers as needed and starts foreground monitoring, with logs in the terminal. Copy a test image and paste the resulting remote path. Monitoring includes newly copied images from **all applications**. Use Ctrl+C to stop.
+
+To run in the background and automatically at login, stop the foreground copy first, then:
 
 ```sh
 ./clipbridge start
 ./clipbridge status
 ```
 
-The first start compiles the Swift helpers and generates the LaunchAgent automatically. Copy a test image, then paste the resulting remote path. Monitoring includes images from **all applications**. A successful upload can replace the clipboard with a file path.
+The toolkit generates the LaunchAgent automatically. Use `./clipbridge stop` to stop background uploads and disable startup at login. That command does not stop a foreground monitor.
 
-To stop background uploads and disable startup at login:
+Settings are loaded at startup, with no automatic reload. After editing, restart foreground monitoring, or run `./clipbridge stop` followed by `./clipbridge start` for the background service.
+
+For a configuration stored elsewhere, specify it consistently:
 
 ```sh
-./clipbridge stop
+./clipbridge --config /absolute/path/to/config.json doctor
+./clipbridge --config /absolute/path/to/config.json run
 ```
 
-Use `./clipbridge run` instead of `start` for foreground monitoring; stop it with Ctrl+C. Foreground logs appear in that terminal. `stop` manages the background service only.
+## Optional Setup Wizard
+
+If you prefer guided setup, run `./clipbridge configure`. It writes the same configuration file, lists literal SSH aliases from your SSH configuration and included files, and lets you choose a number or enter an alias. For a new target, Enter selects `.local/share/clipbridge/images` under the remote user's home directory.
+
+The wizard checks SSH access, creates the directory if necessary and creates/removes a temporary write probe before saving locally. It never starts clipboard monitoring. Editing the file directly does not require running this wizard.
 
 ## Commands
 
@@ -55,11 +92,11 @@ Use `./clipbridge run` instead of `start` for foreground monitoring; stop it wit
 | `./clipbridge logs --follow` | Follow the background log |
 | `./clipbridge run` | Build helpers and monitor in the foreground |
 
-`doctor` checks an existing remote directory without creating it. An absent interactive SSH session is reported as waiting, because reachability and an active session are different conditions. Run `configure` to create a missing destination.
+`doctor` checks an existing remote directory without creating it. An absent interactive SSH session is reported as waiting, because reachability and an active session are different conditions. Create a missing destination over SSH as shown above, or use the optional `configure` wizard.
 
 ## Configuration and Migration
 
-Settings live in `~/.config/clipbridge/config.json`, outside the checkout. The wizard saves atomically with owner-only permissions. Rerun `configure` to change settings, then stop/start an existing monitor to apply them. If an existing configuration is invalid, successful setup preserves its bytes in an owner-only `config.json.backup-*` file before replacing it.
+Settings live in `~/.config/clipbridge/config.json`, outside the checkout. Edit the file directly or rerun the optional `configure` wizard, then restart an existing monitor to apply changes. The wizard saves atomically with owner-only permissions. If an existing configuration is invalid, successful setup preserves its bytes in an owner-only `config.json.backup-*` file before replacing it.
 
 For scripted setup:
 
@@ -70,7 +107,7 @@ For scripted setup:
 
 Replace the sample alias and path with your destination. To save without network access, pass both `--host`, an absolute `--remote-dir`, and `--no-check`. Run `doctor` before starting once access is available.
 
-All commands accept `--config PATH` for another configuration file, before or after the subcommand. Explicit directories currently support ASCII letters, digits, underscores, dots, slashes and hyphens. Spaces, `..`, tilde expansion and shell expressions are unsupported. Enter accepts the displayed default; a new SSH target defaults to its remote home directory.
+All commands accept `--config PATH` before or after the subcommand. Relative paths use the current working directory. `stop`, `status` and `logs` still manage the single per-user service; selecting another config does not create an independent service. Explicit directories currently support ASCII letters, digits, underscores, dots, slashes and hyphens. Spaces, `..`, tilde expansion and shell expressions are unsupported. Enter accepts the displayed default; a new SSH target defaults to its remote home directory.
 
 The earlier `prototype/macos/config.json` is still recognized when the default user configuration does not exist. `configure` uses those settings as defaults and saves a new user configuration without deleting the old file. Custom locations other than the default user configuration path do not use this fallback.
 

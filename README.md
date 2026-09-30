@@ -4,25 +4,37 @@ Upload images from your Mac clipboard to a remote host over SSH, then paste the 
 
 ## Project Status
 
-The command-line toolkit is the first planned distribution format. Guided configuration and service commands are available from source; packaging and real-world installation validation are still in progress. There is no published installable release yet.
+The command-line toolkit is the first planned distribution format. File-based configuration and service commands are available from source; packaging and real-world installation validation are still in progress. There is no published installable release yet.
 
 ## Get Started
 
 You need macOS, Python 3.9+, Swift Command Line Tools, and a working SSH alias with noninteractive authentication. From this checkout:
 
+Create your local configuration without overwriting an existing file:
+
 ```sh
-./clipbridge configure
+mkdir -p ~/.config/clipbridge
+cp -n prototype/macos/config.example.json ~/.config/clipbridge/config.json
+chmod 600 ~/.config/clipbridge/config.json
+```
+
+Edit `~/.config/clipbridge/config.json` in your preferred editor:
+
+```json
+{
+  "ssh_host": "dev-server",
+  "remote_directory": "/home/example/.local/share/clipbridge/images"
+}
+```
+
+Replace `dev-server` with your SSH alias and the directory with an absolute path on that server. Ensure the remote directory exists and is writable; the [toolkit guide](prototype/macos/README.md#configure-with-a-file) includes a setup example. Keep an interactive `ssh YOUR_ALIAS` session open, then check and try foreground monitoring:
+
+```sh
 ./clipbridge doctor
+./clipbridge run
 ```
 
-Choose an SSH alias and accept the remote-home upload directory or enter your own. Setup checks the destination and saves your configuration; it does not enable monitoring.
-
-Keep an interactive `ssh YOUR_ALIAS` session open. Start background monitoring, including at login:
-
-```sh
-./clipbridge start
-./clipbridge status
-```
+Stop foreground monitoring with Ctrl+C. To enable background monitoring and startup at login, use `./clipbridge start` instead. Settings are read on startup; restart the monitor after editing them. The optional `./clipbridge configure` wizard can still generate the same file.
 
 Newly copied images from all applications are eligible. Successful uploads copy the remote file path back to the clipboard when its contents have not changed. Use `./clipbridge stop` to stop background uploads and disable startup at login, or `./clipbridge logs` to inspect results.
 
