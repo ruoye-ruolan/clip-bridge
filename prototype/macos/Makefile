@@ -2,7 +2,7 @@ PYTHON ?= python3
 SWIFTC ?= swiftc
 BUILD := build
 
-.PHONY: build test test-python test-swift run clean
+.PHONY: build test test-python test-swift configure doctor run clean
 
 build: $(BUILD)/clipboard-watch $(BUILD)/clipboard-path
 
@@ -27,8 +27,14 @@ test-python:
 test-swift: build $(BUILD)/clipboard-watch-test
 	./$(BUILD)/clipboard-watch-test ./$(BUILD)/clipboard-watch
 
-run: build
-	$(PYTHON) -u auto_upload.py --config config.json
+configure:
+	$(PYTHON) ../../clipbridge configure
+
+doctor:
+	$(PYTHON) ../../clipbridge doctor
+
+run:
+	$(PYTHON) ../../clipbridge run
 
 clean:
 	rm -rf $(BUILD)

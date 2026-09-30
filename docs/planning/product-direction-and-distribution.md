@@ -4,11 +4,11 @@ Status: Draft. This document explores product direction, distribution options, a
 
 ClipBridge uploads images from the local clipboard to a remote host over SSH, then copies the remote file path back to the local clipboard. Its initial audience is developers who use a Mac to access WSL or Linux servers over SSH.
 
-This document compares three distribution options: a script toolkit, a Mac menu bar app, and a cross-platform desktop app. The recommended approach is to validate installation and configuration with the script toolkit, make the Mac menu bar app the primary product, and pursue cross-platform support once demand is clear. The technology choices and roadmap below are proposals; product development and public distribution have not started.
+The chosen first distribution format is a macOS command-line toolkit. Guided setup, reliable uploads, service management and diagnostics take priority. A Mac menu bar app and cross-platform desktop app remain possible extensions if user feedback justifies them; they are not required milestones. A source-based toolkit is under development, but no installable release has been published.
 
 ## Current Prototype
 
-A working local prototype combines Python, Swift helper programs, and a macOS background service. Its active clipboard-upload implementation is now included under [prototype/macos](../../prototype/macos/README.md), with configurable SSH destinations, helper build commands, tests, and a LaunchAgent template. This is a developer prototype, not a packaged release. It performs the following steps:
+A working local prototype combines Python, Swift helper programs, and a macOS background service. Its active clipboard-upload implementation is now included under [prototype/macos](../../prototype/macos/README.md), with guided SSH configuration, helper build commands, tests, and automatic LaunchAgent management. This is a developer prototype, not a packaged release. It performs the following steps:
 
 1. Watches for newly copied clipboard images, ignoring existing content at startup.
 2. Checks for an established `ssh wsl` session.
@@ -31,7 +31,7 @@ The repository copy replaces the original machine-specific paths and remote user
 | Release artifacts | Source code, release archives, installer, and uninstaller | `.app`, `.dmg`, and source code | Installers for each platform and source code |
 | Relative development effort | Low | Medium | High |
 | Relative maintenance effort | Low to medium, mostly environment differences | Medium, focused on macOS | High, requiring validation on three operating systems |
-| Recommended role | Initial validation and developer edition | Primary product | Later expansion |
+| Recommended role | First product and release target | Optional interface based on feedback | Later expansion if demanded |
 
 Effort levels are comparative assessments, not delivery estimates. No cross-platform framework has been selected. Clipboard access, background operation, and SSH integration should be validated before making that decision.
 
@@ -49,11 +49,11 @@ This option reuses the existing implementation and enables quick feedback. Its m
 
 ## Option Two Mac Menu Bar App
 
-Integrate the upload functionality into a standalone native Mac app. Users can view status and change settings from the menu bar without managing several scripts. This is the recommended primary product.
+If toolkit users need more visible status, frequent destination switching or easier pause controls, add a native Mac menu bar interface around the upload logic. This is an optional later direction, not a prerequisite for releasing the toolkit.
 
 Use Swift, SwiftUI, and AppKit for the interface, clipboard monitoring, and state management. Continue using the system SSH and SCP tools with the user's existing connection configuration. The app should manage background operation and launch at login. Migration should disable the prototype's background service to prevent duplicate monitoring and uploads.
 
-The first release should include:
+A future menu bar release could include:
 
 - Initial setup: enter or select an SSH alias, configure the remote directory, and test the connection.
 - An automatic upload switch, disabled by default until the user understands its scope and enables it.
@@ -104,12 +104,12 @@ ClipBridge is a provisional name. Existing projects, trademarks, and domain avai
 
 ## Recommended Roadmap
 
-1. Package the script toolkit with configurable settings, installation and removal, diagnostics, and validation on another machine. Acceptance criterion: a user can follow the documentation on another Mac and complete a first upload.
-2. Build the Mac menu bar app, initially supporting a single SSH destination and the complete automatic upload workflow. Acceptance criterion: users can configure, pause, and troubleshoot uploads without editing scripts.
-3. Complete signing, notarization, and release packaging, then publish a downloadable version through GitHub Releases. GitHub Releases supports binary attachments and release notes. [GitHub Releases documentation](https://docs.github.com/en/repositories/releasing-projects-on-github)
-4. Use feedback to prioritize multiple destinations, updates, and retry improvements before deciding whether to invest in a cross-platform version.
+1. Simplify configuration and operation. The source toolkit now provides guided SSH alias selection, a remote-home default directory, configuration validation, and `configure`, `doctor`, `start`, `stop`, `status`, `logs`, and `run` commands. Validate these against a real SSH target and launchd lifecycle before release.
+2. Harden the upload workflow: define bounded queuing, interruption and shutdown behavior, retained-file cleanup, and supported SSH session types. Acceptance criterion: documented failure and clipboard-protection scenarios pass repeatable tests.
+3. Package a versioned CLI toolkit with clear runtime requirements, installation/removal and upgrades that preserve user settings. Acceptance criterion: another developer can install it on a second Mac and complete a first upload from the documentation without live assistance.
+4. Publish the first toolkit release after the acceptance checks pass. Gather installation, configuration and daily-use feedback. Add a menu bar interface only if that feedback identifies a concrete need; consider cross-platform support separately.
 
-These options can evolve in stages rather than becoming three separate products developed at once. The immediate priority is reusable upload logic and a consistent configuration model that the menu bar app can build on.
+These options can evolve in stages rather than becoming three separate products developed at once. The immediate priority is a dependable CLI setup and upload workflow. Shared configuration and upload logic should remain reusable if another interface is added later.
 
 ## License
 

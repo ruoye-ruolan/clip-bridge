@@ -1,69 +1,117 @@
-# ClipBridge macOS Prototype
+# ClipBridge macOS Command-Line Toolkit
 
-This is a source import of the local Python/Swift clipboard uploader, with configurable destinations and reproducible helper builds. It is a developer prototype, not the planned menu bar app or an installable release.
+This developer toolkit uploads newly copied images to an SSH host and returns their remote paths. Configuration and service management use a single `clipbridge` command. There is no packaged release yet; run it from this checkout.
 
 ## Requirements
 
 - macOS with a logged-in graphical user session.
 - Python 3.9 or later (standard library only).
 - Xcode or Command Line Tools providing `swiftc` and `make`.
-- System SSH/SCP and a Linux or WSL SSH destination with a writable directory.
-- An SSH config alias with noninteractive authentication and a verified host key.
+- A Linux or WSL SSH destination, configured with a literal alias in `~/.ssh/config`.
+- Noninteractive SSH authentication, such as a key available to the SSH agent, and a verified host key.
 
-Verified locally with Python 3.14.7, Swift 6.4, and macOS 27.0.1 on Apple silicon. Other versions and Intel Macs have not been validated.
+If tools are missing, install Command Line Tools with `xcode-select --install`. Before setup, connect using your normal `ssh YOUR_ALIAS` command to verify the server identity and authentication. ClipBridge will not accept unknown host keys automatically or prompt for an SSH password.
 
-## Build and Test
+Development checks have run with Python 3.14.7, Swift 6.4 and macOS 27.0.1 on Apple silicon. Other versions and Intel Macs remain unverified.
+
+## Quick Start
 
 From the repository root:
+
+```sh
+./clipbridge configure
+./clipbridge doctor
+```
+
+The wizard lists literal SSH aliases from your SSH configuration and included files. Choose a number or enter an alias manually. Press Enter for the default destination: `.local/share/clipbridge/images` under the **remote** user's home directory. Setup checks SSH access, creates the directory if necessary and creates/removes a temporary write probe before saving locally. It never starts clipboard monitoring.
+
+Keep an interactive `ssh YOUR_ALIAS` session open. To enable background uploads and automatic startup at login:
+
+```sh
+./clipbridge start
+./clipbridge status
+```
+
+The first start compiles the Swift helpers and generates the LaunchAgent automatically. Copy a test image, then paste the resulting remote path. Monitoring includes images from **all applications**. A successful upload can replace the clipboard with a file path.
+
+To stop background uploads and disable startup at login:
+
+```sh
+./clipbridge stop
+```
+
+Use `./clipbridge run` instead of `start` for foreground monitoring; stop it with Ctrl+C. Foreground logs appear in that terminal. `stop` manages the background service only.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `./clipbridge configure` | Choose or change the SSH destination; preserves the saved configuration if checks fail |
+| `./clipbridge doctor` | Check tools, configuration, old-service conflicts, authentication and directory permissions without starting monitoring |
+| `./clipbridge start` | Build helpers, start the background monitor and enable startup at login |
+| `./clipbridge stop` | Unload the background monitor and remove its login plist; keep configuration and uploads |
+| `./clipbridge status` | Show monitor/service state; this is not a connectivity or upload-health check |
+| `./clipbridge logs` | Show the last 50 background log lines |
+| `./clipbridge logs --follow` | Follow the background log |
+| `./clipbridge run` | Build helpers and monitor in the foreground |
+
+`doctor` checks an existing remote directory without creating it. An absent interactive SSH session is reported as waiting, because reachability and an active session are different conditions. Run `configure` to create a missing destination.
+
+## Configuration and Migration
+
+Settings live in `~/.config/clipbridge/config.json`, outside the checkout. The wizard saves atomically with owner-only permissions. Rerun `configure` to change settings, then stop/start an existing monitor to apply them. If an existing configuration is invalid, successful setup preserves its bytes in an owner-only `config.json.backup-*` file before replacing it.
+
+For scripted setup:
+
+```sh
+./clipbridge configure --host dev-server
+./clipbridge configure --host dev-server --remote-dir /home/example/images
+```
+
+Replace the sample alias and path with your destination. To save without network access, pass both `--host`, an absolute `--remote-dir`, and `--no-check`. Run `doctor` before starting once access is available.
+
+All commands accept `--config PATH` for another configuration file, before or after the subcommand. Explicit directories currently support ASCII letters, digits, underscores, dots, slashes and hyphens. Spaces, `..`, tilde expansion and shell expressions are unsupported. Enter accepts the displayed default; a new SSH target defaults to its remote home directory.
+
+The earlier `prototype/macos/config.json` is still recognized when the default user configuration does not exist. `configure` uses those settings as defaults and saves a new user configuration without deleting the old file. Custom locations other than the default user configuration path do not use this fallback.
+
+Older uploaders must be stopped before starting this version. The toolkit detects loaded `local.codex.xnip-wsl` and `local.clipbridge.prototype` services and refuses to run alongside them. It does not change those services. If migrating from either one, unload its exact label; for example:
+
+```sh
+launchctl bootout "gui/$(id -u)/local.codex.xnip-wsl"
+```
+
+Remove or move that older service's plist out of `~/Library/LaunchAgents/` if it should no longer start at login. New instances also check a per-user monitor lock. Keep the checkout at a stable path while its background service is installed. After moving it or replacing the Python installation, run `stop`, then `start` from the new location.
+
+## Files and Logs
+
+- `auto_upload.py`: clipboard events, session detection and sequential uploads.
+- `configuration.py`: validation, alias discovery, remote checks and private config saving.
+- `cli.py` and `service.py`: command interface and launchd management.
+- `swift/`: native clipboard helpers; generated binaries live in ignored `build/`.
+- `tests/`: unit tests and a private-pasteboard integration test.
+- `~/Library/LaunchAgents/local.clipbridge.plist`: generated background service.
+- `~/Library/Logs/ClipBridge/clipbridge.log`: background log, including uploaded paths.
+- `~/Library/Caches/clipbridge/auto/`: upload staging and failed-image retention.
+
+Failed transfers retain images under `upload-*`; successful transfers remove their temporary local copies. There is no automatic cleanup policy or retry command. Inspect logs and clean retained files manually while stopped. Remote files are not automatically removed, and interrupted SCP transfers may leave partial files.
+
+## Development and Validation
 
 ```sh
 make -C prototype/macos build
 make -C prototype/macos test
 ```
 
-Builds go into ignored `build/`. Python tests mock network and clipboard commands. The Swift integration test creates a private named pasteboard, checks image capture and stale-image rejection, then releases it. It does not modify the general clipboard or upload files.
+Tests do not upload files, install services or touch the general clipboard. Python tests mock SSH and launchctl and exercise configuration, migration, error handling and service lifecycle. Swift tests use a private named pasteboard for image capture and stale-image rejection. The remote setup shell fragment is also tested in a temporary local directory.
 
-## Configure and Run
+Real SSH uploads and launchd startup under the new commands still require end-to-end testing, followed by installation on another Mac, before a release.
 
-1. Copy `prototype/macos/config.example.json` to `prototype/macos/config.json` (ignored by Git).
-2. Set `ssh_host` to your alias from `~/.ssh/config`. Set `remote_directory` to the actual absolute directory on that host; `/home/example/...` is only a placeholder. The directory accepts ASCII letters, digits, underscores, dots, slashes and hyphens, with no `..` components. Tilde expansion, spaces and shell expressions are unsupported.
-3. Confirm SSH authentication and the server's host key through your normal terminal workflow. Keep an interactive `ssh YOUR_ALIAS` session open while testing.
-4. Stop any earlier clipboard-upload service before starting this copy. The original prototype used the LaunchAgent label `local.codex.xnip-wsl`; if you have that service, unload it first:
+## Prototype Boundaries
 
-   ```sh
-   launchctl bootout "gui/$(id -u)/local.codex.xnip-wsl"
-   ```
+Existing clipboard content is ignored on startup. Offline images are skipped rather than deferred. Captures that become stale before extraction are skipped. Uploads run sequentially, rechecking the session when each job begins.
 
-5. Start the foreground monitor:
+Session detection looks for a same-user `ssh ALIAS` process with an established TCP socket. It is a heuristic, not proof of authentication. SSH multiplexing, jump hosts, remote-command sessions and IDE-managed connections are not guaranteed. Alias discovery provides suggestions without evaluating `Match` rules; manual entry remains available.
 
-   ```sh
-   make -C prototype/macos run
-   ```
+Clipboard polling can miss rapid changes. The upload queue is unbounded. Checking the clipboard change count and writing a path are not atomic, leaving a small race window. Foreground shutdown may finish already queued uploads. No GUI, history browser, automatic updater or bundled Python runtime is included.
 
-Starting this command enables monitoring of newly copied images from **all applications**. Copy a test image; a successful upload normally replaces it with the remote path. Logs appear in the terminal. Use Ctrl+C to stop; an upload already running or queued may finish during shutdown.
-
-Existing clipboard content is ignored at startup. Offline images are skipped. Captures that become stale before extraction are skipped. Uploads run sequentially, and queued captures are discarded if the session check fails when their upload starts. A change-count check preserves newer clipboard content in ordinary use.
-
-## Files and Background Operation
-
-- `auto_upload.py`: configuration, session detection, upload queue and notifications.
-- `swift/clipboard-watch.swift`: polls the clipboard every 0.3 seconds and extracts PNG images.
-- `swift/clipboard-path.swift`: conditionally writes the remote path.
-- `tests/`: Python unit tests and a Swift pasteboard integration test.
-- `launchd/local.clipbridge.prototype.plist.example`: optional background service template.
-
-For background use, copy the template to a `.plist`, replace all placeholders with absolute paths (including the Python executable and log file), and create the log directory first. Use XML escaping for special characters in paths. Validate with `plutil -lint PATH_TO_PLIST`, place it in `~/Library/LaunchAgents/`, and load it with `launchctl bootstrap "gui/$(id -u)" PATH_TO_PLIST`. Stop the foreground copy before loading. Unload with `launchctl bootout "gui/$(id -u)/local.clipbridge.prototype"`; remove the installed plist to prevent future loading. `KeepAlive` restarts the monitor after exit. Moving the checkout requires updating the plist.
-
-A per-user lock prevents concurrent instances of this imported version. It does not detect the original external service. Importing or testing this repository does not install, start, or replace any LaunchAgent.
-
-Failed uploads retain local images under `~/Library/Caches/clipbridge/auto/upload-*`. Successful uploads remove their temporary local copy. There is no automatic retention policy or retry command; inspect logs and remove unwanted retained files manually while stopped. Remote files are not automatically removed, and interrupted SCP transfers may leave partial files.
-
-## Known Limitations
-
-Session detection looks for a same-user `ssh ALIAS` process with an established TCP socket. This is a heuristic, not proof of completed authentication. Remote-command sessions, SSH multiplexing, jump hosts and IDE-managed connections are not guaranteed to work.
-
-Clipboard polling can miss rapid changes. The upload queue is unbounded. The change-count check and clipboard write are not atomic, leaving a small race window. No menu bar UI, pause switch, history browser, automatic updater or packaged runtime is included. Full end-to-end SSH uploads and another-machine installation remain to be verified for this imported version.
-
-## Import Scope
-
-Imported from the active `codex-shot` prototype: `auto_upload.py`, `clipboard-watch.swift`, `clipboard-path.swift`, clipboard tests and the LaunchAgent structure. Personal paths became local configuration; notifications use the ClipBridge name. Old folder-watching code, the unused Xnip-only `UploadPolicy.swift`, its obsolete tests, the standalone `clipboard-image` utility, backups and compiled binaries were not imported. The original local installation remains separate.
+The original import came from the active `codex-shot` Python/Swift prototype. Obsolete folder-watching code, Xnip-only source filtering, backups and compiled binaries were excluded. The original local installation remains separate.

@@ -6,19 +6,19 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 import shlex
 import shutil
 import subprocess
 import tempfile
 import uuid
 
+from configuration import DEFAULT_CONFIG, LEGACY_CONFIG, SSH_OPTIONS, load_config
+
 HOME = Path.home()
 ROOT = Path(__file__).resolve().parent
 BASE = ROOT / 'build'
 CACHE = HOME / 'Library/Caches/clipbridge/auto'
 REMOTE = None
-SSH_OPTIONS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=2']
 
 
 def run(args, timeout=10):
@@ -64,22 +64,6 @@ def connected(host):
         return any(line.startswith('n') and '->' in line for line in result.stdout.splitlines())
     except (subprocess.SubprocessError, OSError):
         return False
-
-
-def load_config(path):
-    """Require an explicit destination; never inherit the author's SSH target."""
-    with Path(path).open(encoding='utf-8') as stream:
-        config = json.load(stream)
-    if not isinstance(config, dict):
-        raise ValueError('Configuration must be a JSON object')
-    host = config.get('ssh_host', '')
-    remote = config.get('remote_directory', '')
-    if not isinstance(host, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host):
-        raise ValueError('ssh_host must be an SSH config alias (letters, digits, _, . or -)')
-    if (not isinstance(remote, str) or not re.fullmatch(r'/[A-Za-z0-9_./-]+', remote)
-            or '..' in remote.split('/')):
-        raise ValueError('remote_directory must be an absolute POSIX path without spaces or shell characters')
-    return host, remote.rstrip('/') or '/'
 
 
 def notify(message):
@@ -146,7 +130,9 @@ def process_event(event, host, executor):
 def main():
     global REMOTE
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, default=ROOT / 'config.json')
+    parser.add_argument('--config', type=Path, default=(
+        DEFAULT_CONFIG if DEFAULT_CONFIG.exists() or not LEGACY_CONFIG.exists() else LEGACY_CONFIG
+    ))
     args = parser.parse_args()
     try:
         host, REMOTE = load_config(args.config)
