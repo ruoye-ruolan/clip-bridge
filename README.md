@@ -1,16 +1,16 @@
 # ClipBridge
 
-Upload images from your Mac clipboard to a remote host over SSH, then paste the remote file path into your workflow. ClipBridge is initially intended for developers working with WSL or Linux servers.
+Last updated: 2026-09-30.
 
-## Project Status
+Copy an image on your Mac, upload it to a Linux or WSL host over SSH, and paste its remote file path into your workflow.
 
-The command-line toolkit is the first planned distribution format. File-based configuration and service commands are available from source; packaging and real-world installation validation are still in progress. There is no published installable release yet.
+ClipBridge is a command-line toolkit configured with a JSON file. It runs in the foreground or as a per-user background service. The source is available for development and trials; there is no packaged release or installer yet.
 
-## Get Started
+## Quick Start
 
-You need macOS, Python 3.9+, Swift Command Line Tools, and a working SSH alias with noninteractive authentication. From this checkout:
+Requirements: macOS, Python 3.9+, Swift Command Line Tools with `make`, and a working SSH alias with noninteractive authentication and a verified host key. Run the commands below from this checkout.
 
-Create your local configuration without overwriting an existing file:
+Create a configuration file without replacing existing settings:
 
 ```sh
 mkdir -p ~/.config/clipbridge
@@ -18,7 +18,7 @@ cp -n prototype/macos/config.example.json ~/.config/clipbridge/config.json
 chmod 600 ~/.config/clipbridge/config.json
 ```
 
-Edit `~/.config/clipbridge/config.json` in your preferred editor:
+Edit `~/.config/clipbridge/config.json`, replacing both example values:
 
 ```json
 {
@@ -27,18 +27,41 @@ Edit `~/.config/clipbridge/config.json` in your preferred editor:
 }
 ```
 
-Replace `dev-server` with your SSH alias and the directory with an absolute path on that server. Ensure the remote directory exists and is writable; the [toolkit guide](prototype/macos/README.md#configure-with-a-file) includes a setup example. Keep an interactive `ssh YOUR_ALIAS` session open, then check and try foreground monitoring:
+`ssh_host` is the alias you use to connect. `remote_directory` is the image destination **on that remote host**. It is currently required and must be an absolute path; uploads attempt to create it if missing. See the [configuration reference](docs/usage.md) for accepted values.
+
+Keep an interactive `ssh YOUR_ALIAS` session open. Enable background monitoring and startup at login:
 
 ```sh
-./clipbridge doctor  # optional diagnostics
-./clipbridge run
+./clipbridge start
 ```
 
-Stop foreground monitoring with Ctrl+C, or run `./clipbridge start` in another terminal to switch it to background monitoring and enable startup at login. Repeating `start` while the same background service is running returns its status without starting another instance. Use `./clipbridge restart` after editing settings. The optional `./clipbridge configure` wizard can still generate the same file.
+Newly copied images from **all applications** are eligible. After a successful upload, ClipBridge checks whether the clipboard changed before replacing its content with the remote path. Existing images at startup and images copied while no matching SSH session is detected are skipped. This transfers image files; it does not synchronize the remote operating system's clipboard.
 
-Newly copied images from all applications are eligible. Successful uploads copy the remote file path back to the clipboard when its contents have not changed. Use `./clipbridge stop` to stop background uploads and disable startup at login, or `./clipbridge logs` to inspect results.
+Neither the `configure` wizard nor `doctor` is required before starting. They are optional setup and diagnostic tools.
 
-See the [toolkit guide](prototype/macos/README.md) for dependencies, foreground mode, configuration migration and known limitations. Older upload services must be stopped before starting this version. ClipBridge transfers files; it does not synchronize the remote operating system's clipboard.
+## Everyday Commands
+
+| Command | Action |
+| --- | --- |
+| `./clipbridge start` | Start background monitoring, switch from a cooperating foreground monitor, or report the existing background instance |
+| `./clipbridge run` | Monitor in the foreground; stop with Ctrl+C |
+| `./clipbridge restart` | Reload settings by restarting background monitoring |
+| `./clipbridge stop` | Stop the background service and disable startup at login |
+| `./clipbridge status` | Show monitor/service state |
+| `./clipbridge logs --follow` | Follow background upload logs |
+| `./clipbridge doctor` | Optionally check tools, SSH access and existing directory permissions |
+
+Repeated `start` with the same configuration does not restart an active background service. Configuration edits require `restart`, or stopping and rerunning foreground mode. See the [user guide](docs/usage.md) for handoff behavior, custom configuration paths, migration and troubleshooting.
+
+## Repository Guide
+
+| File or directory | Purpose |
+| --- | --- |
+| [docs/usage.md](docs/usage.md) | Configuration, commands, runtime behavior and troubleshooting |
+| [prototype/macos/README.md](prototype/macos/README.md) | Source layout, build commands, tests and implementation boundaries |
+| [docs/planning/product-direction-and-distribution.md](docs/planning/product-direction-and-distribution.md) | Product decisions, release requirements and future options |
+| [AGENTS.md](AGENTS.md) | Contributor and coding-agent guidelines |
+| [clipbridge](clipbridge) | Repository command-line entry point |
 
 ## Development
 
@@ -47,12 +70,8 @@ make -C prototype/macos build
 make -C prototype/macos test
 ```
 
-Tests use mocked network/service commands and a private test pasteboard. They do not start monitoring or upload clipboard contents.
-
-## Planning
-
-The [Product Direction and Distribution Plan](docs/planning/product-direction-and-distribution.md) records the CLI-first direction and possible later interfaces. A menu bar app and cross-platform support depend on user feedback.
+Tests use mocked SSH/launchd operations, isolated subprocesses and a private test pasteboard. They do not upload your clipboard or install a background service. Release preparation still includes full real-host transfer and service-lifecycle checks, plus installation on another Mac.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+[MIT](LICENSE).

@@ -1,116 +1,57 @@
-# ClipBridge Product Direction and Distribution Plan
+# ClipBridge Product Direction and Release Plan
 
-Status: Draft. This document explores product direction, distribution options, and a proposed roadmap. It is not an installation guide or a commitment to ship the features described below.
+Last updated: 2026-09-30.
 
-ClipBridge uploads images from the local clipboard to a remote host over SSH, then copies the remote file path back to the local clipboard. Its initial audience is developers who use a Mac to access WSL or Linux servers over SSH.
+Status: Active plan. The first product is a macOS command-line toolkit. Source-based use is available; a packaged release is pending. Planned work below is not shipped functionality.
 
-The chosen first distribution format is a macOS command-line toolkit. Guided setup, reliable uploads, service management and diagnostics take priority. A Mac menu bar app and cross-platform desktop app remain possible extensions if user feedback justifies them; they are not required milestones. A source-based toolkit is under development, but no installable release has been published.
+See the [project overview](../../README.md), [usage guide](../usage.md) and [implementation guide](../../prototype/macos/README.md) for current behavior and development instructions.
 
-## Current Prototype
+## Product Decision
 
-A working local prototype combines Python, Swift helper programs, and a macOS background service. Its active clipboard-upload implementation is now included under [prototype/macos](../../prototype/macos/README.md), with guided SSH configuration, helper build commands, tests, and automatic LaunchAgent management. This is a developer prototype, not a packaged release. It performs the following steps:
+ClipBridge serves developers who use a Mac to access Linux or WSL over SSH. It uploads newly copied clipboard images and returns the remote file path to the Mac clipboard. It does not synchronize the remote operating system's clipboard or restrict uploads to Xnip.
 
-1. Watches for newly copied clipboard images, ignoring existing content at startup.
-2. Checks for an established `ssh wsl` session.
-3. Uploads the image to a remote directory using SSH and SCP.
-4. Replaces the clipboard with the remote path after a successful upload, provided the clipboard has not changed in the meantime.
-5. Skips images while disconnected without uploading them later, and retains a local image copy if an upload fails.
+Release the existing Python and Swift implementation as a maintainable CLI toolkit. File-based configuration is the primary setup method; the setup wizard and diagnostics are optional conveniences. Reliable uploads, understandable status and straightforward service management take priority over a graphical interface.
 
-The workflow supports images copied by Xnip and other applications. There is no reliable Xnip source marker in the clipboard, so it cannot be advertised as uploading only Xnip screenshots. It transfers an image file and returns its path; it does not synchronize image data with the remote operating system's clipboard.
+The toolkit can remain the long-term product. A graphical interface and cross-platform support are outside the first release.
 
-The repository copy replaces the original machine-specific paths and remote user directory with local configuration. SSH session detection still targets the current command-line workflow. Compatibility with all terminals, connection managers, SSH multiplexing configurations, and remote development tools has not been established. See the prototype guide for current validation and known limitations.
+## What Exists Today
 
-## Comparison of Distribution Options
+The root `clipbridge` command delegates to `prototype/macos/`, the source implementation underlying the CLI product.
 
-| Dimension | Script toolkit | Mac menu bar app | Cross-platform desktop app |
-| --- | --- | --- | --- |
-| Primary audience | Developers comfortable with the terminal | Mac users and developers | Mac, Windows, and Linux users |
-| Installation | Download the toolkit and run an installer command | Download the app and move it to Applications | Download the installer for the operating system |
-| Configuration | Configuration file and command line | Graphical settings | A consistent settings interface across platforms |
-| Proposed implementation | Existing scripts and precompiled helpers | Swift, SwiftUI, and AppKit | Tauri or Electron as candidates, with platform adapters |
-| Release artifacts | Source code, release archives, installer, and uninstaller | `.app`, `.dmg`, and source code | Installers for each platform and source code |
-| Relative development effort | Low | Medium | High |
-| Relative maintenance effort | Low to medium, mostly environment differences | Medium, focused on macOS | High, requiring validation on three operating systems |
-| Recommended role | First product and release target | Optional interface based on feedback | Later expansion if demanded |
+- Configuration uses `~/.config/clipbridge/config.json`, with an explicit `ssh_host` alias and `remote_directory`. The latter is currently required. The wizard can resolve a remote-home default and save the resulting absolute path.
+- `run` monitors in the foreground. `start` enables background monitoring and startup at login. Repeating `start` with the same configuration path preserves an existing running service; a cooperating foreground instance can finish queued uploads and hand over to the background service.
+- `restart` applies changed settings or a different configuration to the background service. It can interrupt transfers. `stop` stops the background service and disables login startup; foreground monitoring uses Ctrl+C.
+- `status` and `logs` expose service state and background records. `doctor` optionally checks tools, configuration, SSH access and an existing destination without starting monitoring.
+- New images are uploaded sequentially while a matching SSH session is detected. Startup clipboard contents and images observed offline are skipped. Failed uploads retain local copies; successful uploads attempt to preserve newer clipboard content.
 
-Effort levels are comparative assessments, not delivery estimates. No cross-platform framework has been selected. Clipboard access, background operation, and SSH integration should be validated before making that decision.
+Current use requires a checkout, Python and macOS tools; Swift helpers are built locally. There is no published installer, bundled Python runtime, `install` command or `uninstall` command. The generated background service depends on the checkout and Python paths remaining available.
 
-## Option One Script Toolkit
+## Boundaries to Resolve
 
-Package the existing prototype as a configurable open-source command-line tool with installation and removal support. This is the quickest way to let other developers try it.
+Session detection checks for a same-user `ssh ALIAS` process with an established TCP socket. This heuristic is not proof of authentication. IDE connections, multiplexing, jump hosts and remote-command sessions are not guaranteed. Define and test the supported connection patterns before advertising broader compatibility.
 
-Suggested commands include `install`, `uninstall`, `start`, `stop`, `status`, and `doctor` for installation, removal, background service management, and connection diagnostics. A public release must not depend on absolute paths from the developer's machine or require ordinary users to compile Swift helpers themselves.
+Direct configuration still requires an absolute remote directory. Uploads attempt to create it, while read-only `doctor` fails if it does not exist. Improve that diagnostic distinction. Making the field optional is a possible simplification, not current behavior.
 
-Configuration should cover at least the SSH host alias, remote directory, automatic startup, and upload trigger policy. Reuse each user's SSH configuration and authentication method by default. Do not bundle personal keys or host details. Resolve the remote destination through configuration or the remote user's home directory rather than hard-coding a username.
+Clipboard polling can miss rapid changes, and the final change-count check and write are not atomic. The upload queue is unbounded. Failed local files, remote images and logs have no automatic retention policy; interrupted transfers can leave partial remote files. Shutdown, handoff and restart need explicit expectations for queued and active uploads.
 
-Release artifacts should include a versioned archive, installation and removal instructions, a sample configuration, log locations, and troubleshooting guidance. Installation should be safe to repeat, upgrades should preserve user settings, and removal should stop the background service.
+## First Release Work
 
-This option reuses the existing implementation and enables quick feedback. Its main drawback is the onboarding burden of terminal commands, permissions, and runtime environment differences.
-
-## Option Two Mac Menu Bar App
-
-If toolkit users need more visible status, frequent destination switching or easier pause controls, add a native Mac menu bar interface around the upload logic. This is an optional later direction, not a prerequisite for releasing the toolkit.
-
-Use Swift, SwiftUI, and AppKit for the interface, clipboard monitoring, and state management. Continue using the system SSH and SCP tools with the user's existing connection configuration. The app should manage background operation and launch at login. Migration should disable the prototype's background service to prevent duplicate monitoring and uploads.
-
-A future menu bar release could include:
-
-- Initial setup: enter or select an SSH alias, configure the remote directory, and test the connection.
-- An automatic upload switch, disabled by default until the user understands its scope and enables it.
-- Connection policies: upload only while an SSH session is established, with an optional mode that uploads whenever the host is reachable.
-- Menu bar states: paused, waiting for a connection, uploading, succeeded, and failed.
-- Recent upload history: copy a path again, inspect failures, and retry manually.
-- A launch-at-login switch and access to logs.
-- A clear explanation that monitoring covers newly copied images from all applications and that successful uploads replace clipboard content with a file path.
-
-The core workflow is: install the app → configure an SSH destination → enable automatic uploads → copy an image → receive an upload notification → paste the remote path.
-
-Distribute a `.dmg` through GitHub Releases. For direct distribution to general users, plan for Developer ID signing and Apple notarization. The signing identity, developer account, and release credentials must be arranged before publishing. Apple supports distribution outside the Mac App Store and provides signing and notarization workflows for that purpose. [Apple macOS distribution guidance](https://developer.apple.com/macos/distribution/)
-
-This option offers a more complete installation, configuration, and status experience while keeping maintenance focused on macOS. It requires additional work on the native interface, application lifecycle, and release process.
-
-## Option Three Cross-Platform Desktop App
-
-Provide a similar experience on Mac, Windows, and Linux. The product can serve the broader workflow of transferring clipboard images from a local computer to an SSH host, beyond WSL or any particular screenshot tool.
-
-Separate shared configuration, upload tasks, history, and state logic from platform-specific clipboard, tray, startup, and SSH session detection modules. Tauri and Electron are potential frameworks; validate the required capabilities before choosing one.
-
-The following areas need implementation and testing on each platform:
-
-- Clipboard image formats and access mechanisms.
-- System tray behavior, background operation, and automatic startup.
-- SSH configuration locations, client availability, and connection detection.
-- Linux desktop environment and display protocol differences.
-- The distinction between accessing local WSL on Windows and connecting to remote WSL over SSH.
-- Packaging, signing, upgrades, and removal for each operating system.
-
-A cross-platform interface framework does not eliminate these operating system differences. Pursue this option once there is clear demand from non-Mac users; it is not the recommended starting point for the first release.
-
-## Requirements Shared by All Public Releases
-
-| Area | Work required before release |
+| Workstream | Acceptance criteria |
 | --- | --- |
-| Portable configuration | Remove personal usernames, host addresses, and fixed installation paths; provide configuration examples |
-| Connection detection | Define supported SSH session types and distinguish an established session from host reachability |
-| Upload scope | Explain that clipboard images from all applications are eligible and provide an accessible pause control |
-| Clipboard protection | Leave the clipboard unchanged after failed uploads and preserve content copied during an upload |
-| Concurrency and disconnection | Prevent duplicate uploads and define behavior for consecutive copies, network interruptions, and retries |
-| Local files | Document retained image copies and log locations, with cleanup and retention policies |
-| Installation and upgrades | Support removal, preserve settings during upgrades, and run only one monitoring instance |
-| Validation | Cover offline skipping, no deferred upload on reconnection, rapid consecutive copies, image formats, and authentication failures |
-| Open-source preparation | Use the MIT license, remove personal configuration and credentials, and provide contribution and issue-reporting guidance |
+| Upload reliability | Repeatable cases cover startup images, offline skipping, reconnection without deferred uploads, consecutive copies, authentication failures, interrupted transfers and preservation of newer clipboard contents. Define queue limits and what happens at capacity. |
+| Service lifecycle | Validate real launchd startup, repeat `start`, foreground handoff, `restart`, logout/login and `stop`. Confirm one monitor runs and document interruption behavior. |
+| Data lifecycle | Define failed-image retention, log cleanup, remote-file ownership and partial-transfer handling. Make manual recovery instructions clear. |
+| Packaging | Choose runtime requirements and whether to distribute precompiled Swift helpers. Provide a versioned artifact with repeatable installation, upgrade, legacy migration and removal procedures that preserve settings as documented. |
+| Independent use | Complete real SSH upload scenarios and a second-Mac setup from the published instructions without live assistance. Validate WSL separately before claiming WSL compatibility. |
 
-ClipBridge is a provisional name. Existing projects, trademarks, and domain availability still need to be checked before release. This document makes no claim that the name is available.
+Automated tests use mocked SSH and service operations, plus private-pasteboard integration checks. They provide regression evidence but do not replace the real-host and service acceptance checks above. Record actual results and remaining limits with the release.
 
-## Recommended Roadmap
+## Later Decisions
 
-1. Simplify configuration and operation. The source toolkit now provides guided SSH alias selection, a remote-home default directory, configuration validation, and `configure`, `doctor`, `start`, `stop`, `status`, `logs`, and `run` commands. Validate these against a real SSH target and launchd lifecycle before release.
-2. Harden the upload workflow: define bounded queuing, interruption and shutdown behavior, retained-file cleanup, and supported SSH session types. Acceptance criterion: documented failure and clipboard-protection scenarios pass repeatable tests.
-3. Package a versioned CLI toolkit with clear runtime requirements, installation/removal and upgrades that preserve user settings. Acceptance criterion: another developer can install it on a second Mac and complete a first upload from the documentation without live assistance.
-4. Publish the first toolkit release after the acceptance checks pass. Gather installation, configuration and daily-use feedback. Add a menu bar interface only if that feedback identifies a concrete need; consider cross-platform support separately.
+| Direction | Evidence needed |
+| --- | --- |
+| Menu bar interface | Users repeatedly need visible upload status, convenient pause controls or graphical settings. Reuse the existing upload behavior where practical. |
+| Multiple destinations or richer history | Daily usage demonstrates frequent switching or difficulty recovering uploaded paths. |
+| Windows or Linux clients | Concrete demand and platform-specific clipboard, SSH and background-service validation justify the additional maintenance. |
 
-These options can evolve in stages rather than becoming three separate products developed at once. The immediate priority is a dependable CLI setup and upload workflow. Shared configuration and upload logic should remain reusable if another interface is added later.
-
-## License
-
-This project is licensed under the [MIT License](../../LICENSE).
+Publish the CLI toolkit under the [MIT License](../../LICENSE) when its acceptance checks pass, then use installation and daily-use feedback to choose further work.

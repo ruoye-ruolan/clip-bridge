@@ -1,51 +1,49 @@
 # Repository Guidelines
 
+Last updated: 2026-09-30.
+
 ## Project Structure & Module Organization
 
-ClipBridge is a macOS CLI toolkit for uploading clipboard images over SSH and returning remote paths. Packaging is pending.
+ClipBridge is a macOS CLI toolkit that uploads clipboard images over SSH and returns remote paths. Source trials are supported; release packaging is pending.
 
-- `README.md`: public overview and current status.
-- `docs/planning/product-direction-and-distribution.md`: draft product direction and roadmap.
+- `README.md`: project overview and minimal startup flow.
+- `docs/usage.md`: authoritative user-facing configuration, commands and troubleshooting.
+- `docs/planning/product-direction-and-distribution.md`: decisions and future release work.
 - `clipbridge`: command-line entry point.
-- `prototype/macos/`: configuration, CLI/service management and upload modules.
+- `prototype/macos/`: Python CLI, configuration, service, handoff and upload modules.
 - `prototype/macos/swift/`: native clipboard helpers.
-- `prototype/macos/tests/`: Python unit tests and Swift pasteboard integration tests.
-- `LICENSE`: MIT license.
+- `prototype/macos/tests/`: unit, subprocess and private-pasteboard tests.
+- `prototype/macos/README.md`: source map and development instructions.
 
-Keep proposals in `docs/planning/` and operating instructions in the prototype README. Distinguish plans from working behavior.
+Keep operating instructions in the user guide and proposals in planning. Do not describe proposed functionality as implemented.
 
 ## Build, Test, and Development Commands
 
-Run from the repository root on macOS:
+Run from the repository root:
 
-- `make -C prototype/macos build`: compile Swift helpers into ignored `build/`.
-- `make -C prototype/macos test`: run Python and Swift tests without network uploads.
-- `make -C prototype/macos test-python`: run the Python tests only.
-- Edit `~/.config/clipbridge/config.json` using the example; restart after changes.
-- `./clipbridge configure`: optional setup wizard.
-- `./clipbridge doctor`: read-only connection and environment diagnostics.
-- `./clipbridge start` / `restart` / `stop` / `status`: background service controls.
-- `./clipbridge run`: foreground monitoring with the saved user configuration.
-- `git diff --check`: inspect tracked changes for whitespace errors.
+- `make -C prototype/macos build`: compile helpers into ignored `build/`.
+- `make -C prototype/macos test`: run Python and Swift checks.
+- `make -C prototype/macos test-python`: run Python tests only.
+- `git diff --check`: check whitespace.
 
-Read setup instructions and stop legacy uploaders before monitoring. Never start or install services merely to validate code.
+File-based configuration is the primary setup flow. `configure` and `doctor` are optional. `run` enables foreground monitoring; `start`, `restart`, `stop` and `status` manage background operation. Never start services or upload personal clipboard contents merely to validate code.
 
 ## Coding Style & Naming Conventions
 
-Use four-space indentation in Python and Swift, and tabs for Makefile recipes. Follow surrounding naming conventions: Python uses `snake_case`; Swift uses `lowerCamelCase`. No formatter or linter is configured.
+Use four spaces in Python and Swift and tabs for Makefile recipes. Use Python `snake_case`, Swift `lowerCamelCase`, and lowercase hyphen-separated documentation filenames. No formatter or linter is configured.
 
-Write English documentation with descriptive headings, fenced commands and relative links. Use lowercase, hyphen-separated filenames.
+Write clear English Markdown with descriptive headings, fenced commands and relative links. Keep user instructions aligned with actual command behavior.
 
 ## Testing Guidelines
 
-Python uses standard-library `unittest`; name tests `test_*.py`. Mock SSH, SCP, launchctl and general-clipboard access. Use temporary configuration paths. Swift integration tests use a private named pasteboard, preserving the user's clipboard. Cover offline skipping, stale captures, failed-upload retention and clipboard replacement conditions when changing those paths.
+Use standard-library `unittest` and `test_*.py` filenames. Mock SSH, SCP and launchctl. Use temporary config/cache directories and harmless processes for lifecycle tests; use private named pasteboards for Swift checks.
 
-No coverage threshold is configured. Report tests actually run and distinguish mocked transport tests from real SSH validation.
+Cover failed uploads, stale clipboard content, repeated startup, handoff, cancellation and lock ownership when changing those paths. No coverage threshold is configured. Distinguish automated checks from real-host validation; documentation-only edits need link and command checks, not live service operations.
 
 ## Commit & Pull Request Guidelines
 
-Use concise Conventional Commit messages, following existing `chore:` and `docs:` history; use `feat:`, `fix:` or `test:` as appropriate. Target `master`. Explain purpose, behavior changes and validation; link related issues and include screenshots for UI changes.
+Use concise Conventional Commit messages, such as `docs: clarify configuration` or `fix: preserve monitor lock`. Target `master`. Describe the resulting behavior, reason and validation. Link related issues when applicable.
 
 ## Security & Configuration
 
-Never commit credentials, personal hosts, screenshots, logs or compiled helpers. Keep destinations in `~/.config/clipbridge/config.json`; the ignored prototype-local file remains a migration fallback. Publish placeholders only. Preserve argument validation and SSH host-key checks. Keep the MIT license.
+Never commit credentials, personal destinations, screenshots, logs or generated helpers. Default user settings live at `~/.config/clipbridge/config.json`; the ignored prototype-local file is a legacy fallback. Preserve input validation, SSH host-key checks, single-monitor locking and the MIT license.
