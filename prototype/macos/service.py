@@ -1,6 +1,7 @@
 """Manage ClipBridge's per-user launchd service without touching older uploaders."""
 
 import fcntl
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import plistlib
@@ -8,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from xml.parsers.expat import ExpatError
 
 import configuration
 
@@ -88,17 +90,33 @@ def _monitor_running():
     return False
 
 
+@contextmanager
+def _operation_lock():
+    """Serialize service changes so one failed startup cannot undo another."""
+    CACHE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (CACHE / 'service.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError('Another ClipBridge service command is in progress. Try again shortly.') from error
+        yield
+
+
+def _check_legacy_services():
+    legacy = legacy_services()
+    if legacy:
+        raise RuntimeError(
+            'An older uploader is loaded: ' + ', '.join(legacy)
+            + '. Stop it manually before starting ClipBridge; it has not been changed.')
+
+
 def check_foreground_available():
     """Reject duplicate monitors before foreground or background startup."""
     if _service_info() is not None:
         raise RuntimeError(
             'ClipBridge is already loaded. Run clipbridge stop first, then start '
             'again to use the selected configuration.')
-    legacy = legacy_services()
-    if legacy:
-        raise RuntimeError(
-            'An older uploader is loaded: ' + ', '.join(legacy)
-            + '. Stop it manually before starting ClipBridge; it has not been changed.')
+    _check_legacy_services()
     _check_monitor_lock()
 
 
@@ -124,15 +142,85 @@ def _description(info):
     return 'ClipBridge is loaded but not running.' + detail + ' Check ' + str(log_path()) + '.'
 
 
-def start(config_path):
-    """Build helpers, install a plist, and bootstrap the current user's job."""
+def _validate_config(config_path):
     config_path = Path(config_path).expanduser().resolve(strict=True)
     configuration.load_config(config_path)
-    check_foreground_available()
+    return config_path
+
+
+def _build_helpers():
     build = _run(['make', '-C', str(ROOT), 'build'], timeout=180)
     if build.returncode != 0:
         raise RuntimeError('Could not build clipboard helpers: ' + _details(build))
 
+
+def _loaded_config_path():
+    """Read the selected config from the plist managed by this service."""
+    try:
+        with _plist_path().open('rb') as stream:
+            plist = plistlib.load(stream)
+        arguments = plist['ProgramArguments']
+        if not isinstance(arguments, list) or not all(isinstance(item, str) for item in arguments):
+            raise ValueError('ProgramArguments must be a list of strings')
+        selected = Path(arguments[arguments.index('--config') + 1])
+        if not selected.is_absolute():
+            raise ValueError('service config path is not absolute')
+        return selected.resolve()
+    except (OSError, ValueError, KeyError, IndexError, TypeError, ExpatError, plistlib.InvalidFileException) as error:
+        raise RuntimeError(
+            'Cannot verify the loaded service configuration. Run clipbridge restart '
+            'with the selected --config to reload it.') from error
+
+
+def _use_loaded_service(info, config_path):
+    if _loaded_config_path() != config_path:
+        raise RuntimeError(
+            'ClipBridge is already loaded with a different configuration. '
+            'Run clipbridge restart with the selected --config to switch configurations.')
+    if re.search(r'^\s*pid = \d+\s*$', info, re.MULTILINE):
+        return _description(info) + ' Use clipbridge restart to reload changed settings.'
+    # Without -k, kickstart never interrupts a process launchd has just started.
+    result = _run([LAUNCHCTL, 'kickstart', _target()])
+    if result.returncode != 0:
+        raise RuntimeError('Could not resume ClipBridge: ' + _details(result))
+    info = _service_info()
+    if info is None:
+        raise RuntimeError('ClipBridge is no longer loaded. Run clipbridge start again.')
+    return _description(info)
+
+
+def _request_foreground_handoff():
+    # Imported here so configuration and read-only status need no control socket.
+    import monitor_control
+
+    return monitor_control.request_handoff(CACHE, timeout=180)
+
+
+def _start(config_path, helpers_built=False):
+    info = _service_info()
+    if info is not None:
+        return _use_loaded_service(info, config_path)
+    _check_legacy_services()
+    if not helpers_built:
+        _build_helpers()
+    if _monitor_running():
+        handed_off = _request_foreground_handoff()
+        if not handed_off and _monitor_running():
+            raise RuntimeError(
+                'An older or unmanaged ClipBridge monitor is running. Press Ctrl+C once '
+                'in its terminal, then run clipbridge start again.')
+    _check_monitor_lock()
+    return _install_service(config_path)
+
+
+def start(config_path):
+    """Ensure the selected background service is running, without duplicating it."""
+    config_path = _validate_config(config_path)
+    with _operation_lock():
+        return _start(config_path)
+
+
+def _install_service(config_path):
     path = _plist_path()
     previous = path.read_bytes() if path.exists() else None
     log_path().parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -185,8 +273,7 @@ def start(config_path):
     return _description(info)
 
 
-def stop():
-    """Unload only this service and remove its login plist; safe to repeat."""
+def _stop():
     if _service_info() is not None:
         result = _run([LAUNCHCTL, 'bootout', _target()])
         # Also allow another process to have unloaded it between print and bootout.
@@ -196,6 +283,23 @@ def stop():
     _plist_path().unlink(missing_ok=True)
     return ('ClipBridge background service is stopped; automatic startup is disabled. '
             'Foreground monitors, if any, are unaffected.')
+
+
+def stop():
+    """Unload only this service and remove its login plist; safe to repeat."""
+    with _operation_lock():
+        return _stop()
+
+
+def restart(config_path):
+    """Apply selected settings with one serialized background-service restart."""
+    config_path = _validate_config(config_path)
+    with _operation_lock():
+        # A bad config, legacy service or compiler must not stop a working service.
+        _check_legacy_services()
+        _build_helpers()
+        _stop()
+        return _start(config_path, helpers_built=True)
 
 
 def status():

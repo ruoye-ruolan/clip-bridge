@@ -23,6 +23,7 @@ class ServiceTests(unittest.TestCase):
         self.jobs = {}
         self.overrides = {}
         self.bootstrap_info = 'state = running\n pid = 123\n'
+        self.kickstart_info = 'state = running\n pid = 456\n'
         for name, value in [('HOME', self.home), ('ROOT', self.root),
                             ('CACHE', self.home / 'cache')]:
             patcher = patch.object(service, name, value)
@@ -30,6 +31,9 @@ class ServiceTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         patcher = patch.object(service.subprocess, 'run', side_effect=self.run_command)
         self.command = patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch.object(service, '_request_foreground_handoff', return_value=False)
+        self.handoff = patcher.start()
         self.addCleanup(patcher.stop)
 
     @staticmethod
@@ -56,7 +60,17 @@ class ServiceTests(unittest.TestCase):
         if action == 'bootout':
             self.jobs.pop(service.LABEL, None)
             return self.result()
+        if action == 'kickstart':
+            self.jobs[service.LABEL] = self.kickstart_info
+            return self.result()
         self.fail('Unexpected command: ' + repr(args))
+
+    def install_plist(self, config_path=None):
+        selected = self.config if config_path is None else config_path
+        service._atomic_write(service._plist_path(), plistlib.dumps({
+            'Label': service.LABEL,
+            'ProgramArguments': ['python3', '-u', 'auto_upload.py', '--config', str(selected.resolve())],
+        }))
 
     def test_start_uses_selected_config_and_safe_plist_paths(self):
         result = service.start(self.config)
@@ -85,12 +99,66 @@ class ServiceTests(unittest.TestCase):
         self.command.assert_not_called()
         self.assertFalse(service._plist_path().exists())
 
-    def test_already_loaded_requires_restart(self):
-        self.jobs[service.LABEL] = 'state = spawn scheduled\n'
-        with self.assertRaisesRegex(RuntimeError, 'stop first'):
-            service.start(self.config)
-        self.assertFalse(service._plist_path().exists())
+    def test_start_is_idempotent_for_running_service_with_same_config(self):
+        self.jobs[service.LABEL] = 'pid = 52\n'
+        self.install_plist()
+        previous = service._plist_path().read_bytes()
+        result = service.start(self.config)
+        self.assertIn('running (PID 52)', result)
+        self.assertIn('restart to reload', result)
+        self.assertEqual(service._plist_path().read_bytes(), previous)
         self.assertEqual(self.command.call_count, 1)
+        self.assertEqual(self.command.call_args.args[0][1], 'print')
+        self.handoff.assert_not_called()
+
+    def test_running_service_with_different_config_requires_explicit_restart(self):
+        self.jobs[service.LABEL] = 'pid = 52\n'
+        self.install_plist()
+        alternate = self.root / 'other.json'
+        alternate.write_bytes(self.config.read_bytes())
+        with self.assertRaisesRegex(RuntimeError, 'different configuration.*restart'):
+            service.start(alternate)
+        self.assertEqual(self.jobs[service.LABEL], 'pid = 52\n')
+        self.assertEqual(self.command.call_count, 1)
+
+    def test_loaded_service_without_usable_plist_requires_explicit_restart(self):
+        self.jobs[service.LABEL] = 'pid = 52\n'
+        with self.assertRaisesRegex(RuntimeError, 'Cannot verify.*restart'):
+            service.start(self.config)
+        self.assertEqual(self.command.call_count, 1)
+
+    def test_malformed_loaded_plist_reports_restart_instead_of_parser_traceback(self):
+        self.jobs[service.LABEL] = 'pid = 52\n'
+        service._atomic_write(service._plist_path(), b'<?xml version="1.0"?><plist><dict>')
+        with self.assertRaisesRegex(RuntimeError, 'Cannot verify.*restart'):
+            service.start(self.config)
+        self.assertEqual(self.command.call_count, 1)
+
+    def test_loaded_stopped_service_is_kickstarted_without_killing_existing_pid(self):
+        self.jobs[service.LABEL] = 'state = spawn scheduled\n'
+        self.install_plist()
+        result = service.start(self.config)
+        self.assertIn('running (PID 456)', result)
+        commands = [call.args[0] for call in self.command.call_args_list]
+        self.assertEqual(commands, [[service.LAUNCHCTL, 'print', service._target()],
+                                   [service.LAUNCHCTL, 'kickstart', service._target()],
+                                   [service.LAUNCHCTL, 'print', service._target()]])
+
+    def test_kickstart_does_not_claim_waiting_service_is_running(self):
+        self.jobs[service.LABEL] = 'state = spawn scheduled\n'
+        self.install_plist()
+        self.kickstart_info = 'state = spawn scheduled\n last exit code = 2\n'
+        self.assertIn('loaded but not running', service.start(self.config))
+
+    def test_kickstart_failure_leaves_existing_service_and_plist_intact(self):
+        self.jobs[service.LABEL] = 'state = spawn scheduled\n'
+        self.install_plist()
+        previous = service._plist_path().read_bytes()
+        self.overrides['kickstart'] = self.result(1, stderr='permission denied')
+        with self.assertRaisesRegex(RuntimeError, 'Could not resume.*permission denied'):
+            service.start(self.config)
+        self.assertEqual(service._plist_path().read_bytes(), previous)
+        self.assertIn(service.LABEL, self.jobs)
 
     def test_loaded_legacy_uploader_is_not_changed(self):
         for label in service.LEGACY_LABELS:
@@ -107,7 +175,51 @@ class ServiceTests(unittest.TestCase):
         service.CACHE.mkdir()
         with (service.CACHE / 'watcher.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(RuntimeError, r'older or unmanaged.*Ctrl\+C once'):
+                service.start(self.config)
+        self.assertFalse(service._plist_path().exists())
+        self.handoff.assert_called_once()
+
+    def test_foreground_handoff_happens_after_build_before_bootstrap(self):
+        service.CACHE.mkdir()
+        with (service.CACHE / 'watcher.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def handoff():
+                commands = [call.args[0] for call in self.command.call_args_list]
+                self.assertIn(['make', '-C', str(self.root), 'build'], commands)
+                self.assertFalse(any(args[1] == 'bootstrap' for args in commands))
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                return True
+
+            self.handoff.side_effect = handoff
+            self.assertIn('running', service.start(self.config))
+        self.handoff.assert_called_once()
+
+    def test_handoff_must_release_monitor_lock_before_bootstrap(self):
+        self.handoff.return_value = True
+        service.CACHE.mkdir()
+        with (service.CACHE / 'watcher.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with self.assertRaisesRegex(RuntimeError, 'Another ClipBridge monitor'):
+                service.start(self.config)
+        self.assertFalse(service._plist_path().exists())
+
+    def test_build_failure_does_not_request_foreground_handoff(self):
+        self.overrides['make'] = self.result(2, stderr='compiler unavailable')
+        service.CACHE.mkdir()
+        with (service.CACHE / 'watcher.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(RuntimeError, 'compiler unavailable'):
+                service.start(self.config)
+        self.handoff.assert_not_called()
+
+    def test_handoff_failure_does_not_install_service(self):
+        self.handoff.side_effect = RuntimeError('Monitor did not finish in time')
+        service.CACHE.mkdir()
+        with (service.CACHE / 'watcher.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(RuntimeError, 'did not finish in time'):
                 service.start(self.config)
         self.assertFalse(service._plist_path().exists())
 
@@ -211,6 +323,49 @@ class ServiceTests(unittest.TestCase):
         self.jobs[service.LABEL] = 'pid = 52\n'
         with self.assertRaisesRegex(RuntimeError, 'already loaded'):
             service.check_foreground_available()
+
+    def test_service_commands_refuse_concurrent_mutation(self):
+        service.CACHE.mkdir()
+        with (service.CACHE / 'service.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for operation in (lambda: service.start(self.config), service.stop,
+                              lambda: service.restart(self.config)):
+                with self.subTest(operation=operation), self.assertRaisesRegex(RuntimeError, 'command is in progress'):
+                    operation()
+        self.command.assert_not_called()
+
+    def test_restart_validates_build_then_stops_and_starts_once(self):
+        self.jobs[service.LABEL] = 'pid = 52\n'
+        self.install_plist()
+        alternate = self.root / 'other.json'
+        alternate.write_bytes(self.config.read_bytes())
+        self.assertIn('running (PID 123)', service.restart(alternate))
+        commands = [call.args[0] for call in self.command.call_args_list]
+        build_index = commands.index(['make', '-C', str(self.root), 'build'])
+        stop_index = commands.index([service.LAUNCHCTL, 'bootout', service._target()])
+        start_index = commands.index([service.LAUNCHCTL, 'bootstrap', service._domain(), str(service._plist_path())])
+        self.assertLess(build_index, stop_index)
+        self.assertLess(stop_index, start_index)
+        self.assertEqual(sum(args[0] == 'make' for args in commands), 1)
+        self.assertEqual(service._loaded_config_path(), alternate.resolve())
+
+    def test_restart_build_failure_preserves_running_service(self):
+        self.jobs[service.LABEL] = 'pid = 52\n'
+        self.install_plist()
+        self.overrides['make'] = self.result(2, stderr='compiler unavailable')
+        with self.assertRaisesRegex(RuntimeError, 'compiler unavailable'):
+            service.restart(self.config)
+        self.assertEqual(self.jobs[service.LABEL], 'pid = 52\n')
+        self.assertTrue(service._plist_path().exists())
+
+    def test_restart_invalid_config_preserves_running_service(self):
+        self.jobs[service.LABEL] = 'pid = 52\n'
+        self.install_plist()
+        self.config.write_text('{}')
+        with self.assertRaises(ValueError):
+            service.restart(self.config)
+        self.command.assert_not_called()
+        self.assertEqual(self.jobs[service.LABEL], 'pid = 52\n')
 
     def test_failed_verification_unloads_partial_service_and_restores_plist(self):
         original = self.run_command

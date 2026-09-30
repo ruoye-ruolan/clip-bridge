@@ -1,11 +1,13 @@
 """Upload new clipboard images while a matching SSH session exists (macOS)."""
 import argparse
+import atexit
 import concurrent.futures
 import fcntl
 import json
 import logging
 import os
 from pathlib import Path
+import selectors
 import shlex
 import shutil
 import subprocess
@@ -127,13 +129,36 @@ def process_event(event, host, executor):
     future.add_done_callback(report_upload_result)
 
 
-def main():
+def monitor_events(watcher, host, executor, control):
+    """Poll both helper output and cooperative shutdown, including while idle."""
+    pending = b''
+    with selectors.DefaultSelector() as selector:
+        selector.register(watcher.stdout, selectors.EVENT_READ)
+        while not control.handoff_requested():
+            if not selector.select(timeout=0.3):
+                continue
+            data = os.read(watcher.stdout.fileno(), 4096)
+            if not data:
+                raise RuntimeError('Clipboard watcher exited unexpectedly')
+            pending += data
+            while b'\n' in pending:
+                line, pending = pending.split(b'\n', 1)
+                if control.handoff_requested():
+                    return
+                process_event(json.loads(line), host, executor)
+
+
+def main(argv=None):
+    from monitor_control import monitor_registration
+
     global REMOTE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=(
         DEFAULT_CONFIG if DEFAULT_CONFIG.exists() or not LEGACY_CONFIG.exists() else LEGACY_CONFIG
     ))
-    args = parser.parse_args()
+    parser.add_argument('--foreground', action='store_true',
+                        help='allow start to request a transition to background monitoring')
+    args = parser.parse_args(argv)
     try:
         host, REMOTE = load_config(args.config)
     except (OSError, ValueError) as error:
@@ -143,25 +168,39 @@ def main():
             parser.error('Missing compiled helpers; run make -C prototype/macos build')
     os.umask(0o077)
     CACHE.mkdir(parents=True, exist_ok=True)
-    # Held for the process lifetime. This cannot detect the older external prototype.
+    # Keep the lock until the watcher and all queued uploads finish.
     lock = (CACHE / 'watcher.lock').open('a')
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         lock.close()
         parser.error('Another ClipBridge prototype instance is already running')
+    # ThreadPoolExecutor joins unfinished workers before Python's atexit handlers.
+    # Retain this descriptor if Ctrl+C interrupts the join, so a replacement cannot
+    # upload alongside workers that are still finishing during interpreter exit.
+    release_lock = lock.close
+    atexit.register(release_lock)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     logging.info('Watching new clipboard images; requires established ssh %s session', host)
-    # The watcher baselines the current clipboard on startup and emits only changes.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        with subprocess.Popen([str(BASE / 'clipboard-watch'), 'watch'], stdout=subprocess.PIPE, text=True) as watcher:
-            try:
-                for line in watcher.stdout:
-                    process_event(json.loads(line), host, executor)
-                raise RuntimeError('Clipboard watcher exited unexpectedly')
-            finally:
-                watcher.terminate()
-                watcher.wait(timeout=5)
+    try:
+        with monitor_registration(CACHE, args.config, foreground=args.foreground) as control:
+            # Startup baselines existing clipboard content; use binary unbuffered reads
+            # so selector readiness also works when multiple events arrive together.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                with subprocess.Popen([str(BASE / 'clipboard-watch'), 'watch'],
+                                      stdout=subprocess.PIPE, bufsize=0) as watcher:
+                    try:
+                        monitor_events(watcher, host, executor, control)
+                        logging.info('Switching to background mode; finishing queued uploads first')
+                    finally:
+                        if watcher.poll() is None:
+                            watcher.terminate()
+                        watcher.wait(timeout=5)
+    except KeyboardInterrupt:
+        logging.info('Stopping monitor; unfinished uploads may delay process exit')
+    else:
+        release_lock()
+        atexit.unregister(release_lock)
 
 
 if __name__ == '__main__':

@@ -142,6 +142,20 @@ class CliTests(unittest.TestCase):
             self.assertEqual(self.command('start'), 0)
         start.assert_called_once_with(self.path)
 
+    def test_restart_passes_config_to_service(self):
+        with patch.object(cli.service, 'restart', return_value='Restarted', create=True) as restart:
+            self.assertEqual(self.command('restart'), 0)
+        restart.assert_called_once_with(self.path)
+
+    def test_foreground_run_enables_cooperative_handoff(self):
+        configuration.save_config(self.path, 'server', '/home/test/images')
+        with patch.object(cli.service, 'check_foreground_available'), \
+                patch.object(cli, 'check_local_tools'), patch.object(cli.subprocess, 'run'), \
+                patch.object(cli.os, 'execv') as execute:
+            self.assertEqual(self.command('run'), 0)
+        self.assertIn('--foreground', execute.call_args.args[1])
+        self.assertIn(str(self.path.resolve()), execute.call_args.args[1])
+
     def test_status_does_not_misidentify_running_config(self):
         with patch.object(cli.service, 'status', return_value='ClipBridge is running (PID 42).'):
             self.assertEqual(self.command('status'), 0)

@@ -24,11 +24,11 @@ Run from the repository root on macOS:
 - Edit `~/.config/clipbridge/config.json` using the example; restart after changes.
 - `./clipbridge configure`: optional setup wizard.
 - `./clipbridge doctor`: read-only connection and environment diagnostics.
-- `./clipbridge start` / `stop` / `status`: background service controls.
+- `./clipbridge start` / `restart` / `stop` / `status`: background service controls.
 - `./clipbridge run`: foreground monitoring with the saved user configuration.
 - `git diff --check`: inspect tracked changes for whitespace errors.
 
-Read setup instructions and stop previous uploaders before monitoring. Never start or install services merely to validate code.
+Read setup instructions and stop legacy uploaders before monitoring. Never start or install services merely to validate code.
 
 ## Coding Style & Naming Conventions
 

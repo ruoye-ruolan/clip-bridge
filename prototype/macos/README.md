@@ -49,22 +49,24 @@ ssh dev-server 'umask 077; mkdir -p -- /home/example/.local/share/clipbridge/ima
 Substitute your actual alias and directory in that command too. Then keep an interactive `ssh YOUR_ALIAS` session open and run:
 
 ```sh
-./clipbridge doctor
+./clipbridge doctor  # optional diagnostics
 ./clipbridge run
 ```
 
 `doctor` checks without changing the remote directory. `run` compiles helpers as needed and starts foreground monitoring, with logs in the terminal. Copy a test image and paste the resulting remote path. Monitoring includes newly copied images from **all applications**. Use Ctrl+C to stop.
 
-To run in the background and automatically at login, stop the foreground copy first, then:
+To switch to background monitoring and automatic startup at login, run this in another terminal:
 
 ```sh
 ./clipbridge start
 ./clipbridge status
 ```
 
-The toolkit generates the LaunchAgent automatically. Use `./clipbridge stop` to stop background uploads and disable startup at login. That command does not stop a foreground monitor.
+The toolkit generates the LaunchAgent automatically. A cooperating foreground monitor stops accepting new clipboard events, finishes queued uploads and releases its lock before the background monitor starts. This transition can take time while uploads finish. Repeating `start` for an already running background service returns its current status without interrupting it. A loaded service without a running process is asked to start again.
 
-Settings are loaded at startup, with no automatic reload. After editing, restart foreground monitoring, or run `./clipbridge stop` followed by `./clipbridge start` for the background service.
+Use `./clipbridge stop` to stop background uploads and disable startup at login. That command does not stop a foreground monitor.
+
+Settings are loaded at startup, with no automatic reload. After editing, use `./clipbridge restart` to reload the background monitor, or stop and rerun foreground monitoring. Selecting a different config with `start` while a background service is running requires an explicit `restart --config PATH`. A background restart stops the current service and may interrupt active transfers; unlike a foreground handoff, it does not drain the upload queue.
 
 For a configuration stored elsewhere, specify it consistently:
 
@@ -85,7 +87,8 @@ The wizard checks SSH access, creates the directory if necessary and creates/rem
 | --- | --- |
 | `./clipbridge configure` | Choose or change the SSH destination; preserves the saved configuration if checks fail |
 | `./clipbridge doctor` | Check tools, configuration, old-service conflicts, authentication and directory permissions without starting monitoring |
-| `./clipbridge start` | Build helpers, start the background monitor and enable startup at login |
+| `./clipbridge start` | Ensure background monitoring is started; transition from a cooperating foreground monitor or report an existing background instance |
+| `./clipbridge restart` | Restart background monitoring with the selected configuration |
 | `./clipbridge stop` | Unload the background monitor and remove its login plist; keep configuration and uploads |
 | `./clipbridge status` | Show monitor/service state; this is not a connectivity or upload-health check |
 | `./clipbridge logs` | Show the last 50 background log lines |
@@ -117,13 +120,14 @@ Older uploaders must be stopped before starting this version. The toolkit detect
 launchctl bootout "gui/$(id -u)/local.codex.xnip-wsl"
 ```
 
-Remove or move that older service's plist out of `~/Library/LaunchAgents/` if it should no longer start at login. New instances also check a per-user monitor lock. Keep the checkout at a stable path while its background service is installed. After moving it or replacing the Python installation, run `stop`, then `start` from the new location.
+Remove or move that older service's plist out of `~/Library/LaunchAgents/` if it should no longer start at login. New instances also check a per-user monitor lock. Foreground handoff uses an instance-specific request, never a process-name kill. A foreground process launched before handoff support was added must be stopped with Ctrl+C once; it cannot receive the new request. A handoff that has not completed within 180 seconds returns an error instead of starting a duplicate; inspect status before retrying. Images copied during the transition may be skipped. Simultaneous lifecycle commands are serialized; retry if another command is busy. Keep the checkout at a stable path while its background service is installed. After moving it or replacing the Python installation, run `stop`, then `start` from the new location.
 
 ## Files and Logs
 
 - `auto_upload.py`: clipboard events, session detection and sequential uploads.
 - `configuration.py`: validation, alias discovery, remote checks and private config saving.
 - `cli.py` and `service.py`: command interface and launchd management.
+- `monitor_control.py`: cooperative foreground handoff using private instance metadata.
 - `swift/`: native clipboard helpers; generated binaries live in ignored `build/`.
 - `tests/`: unit tests and a private-pasteboard integration test.
 - `~/Library/LaunchAgents/local.clipbridge.plist`: generated background service.

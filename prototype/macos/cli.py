@@ -35,6 +35,7 @@ def parser_for_cli():
     for name, help_text in (
         ('doctor', 'check local tools, SSH authentication and destination permissions'),
         ('start', 'build helpers and enable background uploads, including at login'),
+        ('restart', 'restart background monitoring and reload configuration'),
         ('stop', 'stop background uploads and disable launch at login'),
         ('status', 'show background service status'),
         ('run', 'build helpers and monitor in the foreground'),
@@ -118,7 +119,7 @@ def configure(args):
     print('Monitoring covers images from all applications and may replace the clipboard with a remote path.')
     command = './clipbridge' if path == DEFAULT_CONFIG else f'./clipbridge --config {shlex.quote(str(path))}'
     print(f'Next: keep an interactive SSH session open, then run {command} start (or {command} run).')
-    print('If ClipBridge is already running, stop it and start it again to apply changes.')
+    print(f'If ClipBridge is already running, use {command} restart to apply changes.')
 
 
 def check_local_tools():
@@ -161,7 +162,8 @@ def run_foreground(path):
     check_local_tools()
     subprocess.run(['make', '-C', str(ROOT), 'build'], check=True, timeout=180)
     print('Monitoring newly copied images from all applications. Press Ctrl+C to stop.', flush=True)
-    os.execv(sys.executable, [sys.executable, '-u', str(ROOT / 'auto_upload.py'), '--config', str(path.resolve())])
+    os.execv(sys.executable, [sys.executable, '-u', str(ROOT / 'auto_upload.py'),
+                             '--config', str(path.resolve()), '--foreground'])
 
 
 def show_logs(args):
@@ -188,6 +190,8 @@ def main(argv=None):
             doctor(path)
         elif args.command == 'start':
             print(service.start(path))
+        elif args.command == 'restart':
+            print(service.restart(path))
         elif args.command == 'stop':
             print(service.stop())
         elif args.command == 'status':

@@ -30,11 +30,11 @@ Edit `~/.config/clipbridge/config.json` in your preferred editor:
 Replace `dev-server` with your SSH alias and the directory with an absolute path on that server. Ensure the remote directory exists and is writable; the [toolkit guide](prototype/macos/README.md#configure-with-a-file) includes a setup example. Keep an interactive `ssh YOUR_ALIAS` session open, then check and try foreground monitoring:
 
 ```sh
-./clipbridge doctor
+./clipbridge doctor  # optional diagnostics
 ./clipbridge run
 ```
 
-Stop foreground monitoring with Ctrl+C. To enable background monitoring and startup at login, use `./clipbridge start` instead. Settings are read on startup; restart the monitor after editing them. The optional `./clipbridge configure` wizard can still generate the same file.
+Stop foreground monitoring with Ctrl+C, or run `./clipbridge start` in another terminal to switch it to background monitoring and enable startup at login. Repeating `start` while the same background service is running returns its status without starting another instance. Use `./clipbridge restart` after editing settings. The optional `./clipbridge configure` wizard can still generate the same file.
 
 Newly copied images from all applications are eligible. Successful uploads copy the remote file path back to the clipboard when its contents have not changed. Use `./clipbridge stop` to stop background uploads and disable startup at login, or `./clipbridge logs` to inspect results.
 
