@@ -4,7 +4,18 @@ ClipBridge aims to upload images from your local clipboard to a remote host over
 
 ## Project Status
 
-This repository is currently in the planning stage and contains project documentation only. A local prototype exists, but its implementation has not yet been added to this repository. There is no installable release yet.
+This repository contains an early macOS developer prototype and product planning documents. The prototype combines Python with Swift clipboard helpers; it is not yet a standalone menu bar app. There is no installable release yet.
+
+## Developer Prototype
+
+See the [macOS prototype guide](prototype/macos/README.md) for requirements, configuration, running instructions, and known limitations.
+
+```sh
+make -C prototype/macos build
+make -C prototype/macos test
+```
+
+These commands build the helpers and run tests without starting automatic uploads. Running the monitor requires explicit local SSH configuration. Stop any older clipboard-upload service before starting this version.
 
 ## Intended Workflow
 

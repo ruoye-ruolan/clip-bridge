@@ -1,0 +1,182 @@
+"""Upload new clipboard images while a matching SSH session exists (macOS)."""
+import argparse
+import concurrent.futures
+import fcntl
+import json
+import logging
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import tempfile
+import uuid
+
+HOME = Path.home()
+ROOT = Path(__file__).resolve().parent
+BASE = ROOT / 'build'
+CACHE = HOME / 'Library/Caches/clipbridge/auto'
+REMOTE = None
+SSH_OPTIONS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=2']
+
+
+def run(args, timeout=10):
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=True)
+
+
+def is_session(args, host):
+    if not args or Path(args[0]).name != 'ssh':
+        return False
+    i = 1
+    takes_value = set('BbcDEeFIiJLlmOoPpQRSWw')
+    while i < len(args) and args[i].startswith('-'):
+        option = args[i]
+        if option == '--':
+            i += 1
+            break
+        if option in ('-G', '-V') or option.startswith(('-O', '-Q')):
+            return False
+        if len(option) == 2 and option[1] in takes_value:
+            i += 2
+        else:
+            i += 1
+    return args[i:] == [host]
+
+
+def connected(host):
+    try:
+        listing = run(['/bin/ps', '-axo', 'pid=,uid=,args=']).stdout
+        pids = []
+        for line in listing.splitlines():
+            fields = line.strip().split(None, 2)
+            if len(fields) != 3 or fields[1] != str(os.getuid()):
+                continue
+            try:
+                args = shlex.split(fields[2])
+            except ValueError:
+                continue
+            if is_session(args, host):
+                pids.append(fields[0])
+        if not pids:
+            return False
+        result = run(['/usr/sbin/lsof', '-nP', '-a', '-p', ','.join(pids), '-iTCP', '-sTCP:ESTABLISHED', '-F', 'n'])
+        return any(line.startswith('n') and '->' in line for line in result.stdout.splitlines())
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+def load_config(path):
+    """Require an explicit destination; never inherit the author's SSH target."""
+    with Path(path).open(encoding='utf-8') as stream:
+        config = json.load(stream)
+    if not isinstance(config, dict):
+        raise ValueError('Configuration must be a JSON object')
+    host = config.get('ssh_host', '')
+    remote = config.get('remote_directory', '')
+    if not isinstance(host, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host):
+        raise ValueError('ssh_host must be an SSH config alias (letters, digits, _, . or -)')
+    if (not isinstance(remote, str) or not re.fullmatch(r'/[A-Za-z0-9_./-]+', remote)
+            or '..' in remote.split('/')):
+        raise ValueError('remote_directory must be an absolute POSIX path without spaces or shell characters')
+    return host, remote.rstrip('/') or '/'
+
+
+def notify(message):
+    script = 'on run argv\n display notification (item 1 of argv) with title "ClipBridge"\nend run'
+    try:
+        run(['/usr/bin/osascript', '-e', script, message])
+    except (subprocess.SubprocessError, OSError):
+        logging.exception('Could not show notification')
+
+
+def upload(path, host, captured_count=None):
+    # Recheck queued jobs: a session may close before a previous upload finishes.
+    if not connected(host):
+        logging.info('Skipped after disconnect: %s', path.name)
+        if captured_count is not None:
+            path.unlink(missing_ok=True)
+        return
+    tempdir = Path(tempfile.mkdtemp(prefix='upload-', dir=CACHE))
+    local = tempdir / ('shot-' + str(uuid.uuid4()) + path.suffix.lower())
+    remote = REMOTE.rstrip('/') + '/' + local.name
+    try:
+        count = captured_count if captured_count is not None else run([str(BASE / 'clipboard-path'), 'count']).stdout.strip()
+        if path.is_symlink():
+            raise ValueError('Symlink rejected')
+        shutil.copyfile(path, local)
+        if captured_count is not None:
+            path.unlink(missing_ok=True)
+        # Validate that the saved file is an image before sending it.
+        run(['/usr/bin/sips', '-g', 'format', str(local)])
+        run(['/usr/bin/ssh'] + SSH_OPTIONS + [host, "umask 077; mkdir -p -- " + shlex.quote(REMOTE)], 35)
+        run(['/usr/bin/scp', '-q'] + SSH_OPTIONS + [str(local), host + ':' + remote], 120)
+        result = run([str(BASE / 'clipboard-path'), 'set-if', count, remote])
+        logging.info('Uploaded %s -> %s; %s', path.name, remote, result.stdout.strip())
+        shutil.rmtree(tempdir)
+        notify('Uploaded; remote path copied.' if result.stdout.strip() == 'copied' else 'Uploaded; newer clipboard preserved. See the log for the path.')
+    except (subprocess.SubprocessError, OSError, ValueError):
+        logging.exception('Upload failed; retained at %s', local)
+        notify('Upload failed; local image retained. See the ClipBridge log.')
+
+
+def report_upload_result(future):
+    try:
+        future.result()
+    except Exception:
+        logging.exception('Unexpected upload worker failure; inspect the local cache')
+
+
+def process_event(event, host, executor):
+    if not event.get('image') or not connected(host):
+        return
+    count = str(int(event['count']))
+    path = CACHE / ('clipboard-' + str(uuid.uuid4()) + '.png')
+    try:
+        run([str(BASE / 'clipboard-watch'), 'capture', count, str(path)])
+    except subprocess.CalledProcessError as error:
+        path.unlink(missing_ok=True)
+        if error.returncode not in (3, 4):
+            logging.exception('Could not capture clipboard image')
+        return
+    future = executor.submit(upload, path, host, count)
+    future.add_done_callback(report_upload_result)
+
+
+def main():
+    global REMOTE
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', type=Path, default=ROOT / 'config.json')
+    args = parser.parse_args()
+    try:
+        host, REMOTE = load_config(args.config)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    for helper in ('clipboard-watch', 'clipboard-path'):
+        if not os.access(BASE / helper, os.X_OK):
+            parser.error('Missing compiled helpers; run make -C prototype/macos build')
+    os.umask(0o077)
+    CACHE.mkdir(parents=True, exist_ok=True)
+    # Held for the process lifetime. This cannot detect the older external prototype.
+    lock = (CACHE / 'watcher.lock').open('a')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        parser.error('Another ClipBridge prototype instance is already running')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    logging.info('Watching new clipboard images; requires established ssh %s session', host)
+    # The watcher baselines the current clipboard on startup and emits only changes.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        with subprocess.Popen([str(BASE / 'clipboard-watch'), 'watch'], stdout=subprocess.PIPE, text=True) as watcher:
+            try:
+                for line in watcher.stdout:
+                    process_event(json.loads(line), host, executor)
+                raise RuntimeError('Clipboard watcher exited unexpectedly')
+            finally:
+                watcher.terminate()
+                watcher.wait(timeout=5)
+
+
+if __name__ == '__main__':
+    main()

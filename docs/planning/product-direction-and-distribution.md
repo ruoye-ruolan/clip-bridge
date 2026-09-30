@@ -8,7 +8,7 @@ This document compares three distribution options: a script toolkit, a Mac menu 
 
 ## Current Prototype
 
-A working local prototype combines Python, Swift helper programs, and a macOS background service. The prototype has not yet been included in this repository. It performs the following steps:
+A working local prototype combines Python, Swift helper programs, and a macOS background service. Its active clipboard-upload implementation is now included under [prototype/macos](../../prototype/macos/README.md), with configurable SSH destinations, helper build commands, tests, and a LaunchAgent template. This is a developer prototype, not a packaged release. It performs the following steps:
 
 1. Watches for newly copied clipboard images, ignoring existing content at startup.
 2. Checks for an established `ssh wsl` session.
@@ -18,7 +18,7 @@ A working local prototype combines Python, Swift helper programs, and a macOS ba
 
 The workflow supports images copied by Xnip and other applications. There is no reliable Xnip source marker in the clipboard, so it cannot be advertised as uploading only Xnip screenshots. It transfers an image file and returns its path; it does not synchronize image data with the remote operating system's clipboard.
 
-The prototype still contains machine-specific paths and a remote user directory. SSH session detection also targets the current command-line workflow. Compatibility with all terminals, connection managers, SSH multiplexing configurations, and remote development tools has not been established.
+The repository copy replaces the original machine-specific paths and remote user directory with local configuration. SSH session detection still targets the current command-line workflow. Compatibility with all terminals, connection managers, SSH multiplexing configurations, and remote development tools has not been established. See the prototype guide for current validation and known limitations.
 
 ## Comparison of Distribution Options
 
