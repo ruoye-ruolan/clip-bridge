@@ -14,7 +14,7 @@ Create a configuration file without replacing existing settings:
 
 ```sh
 mkdir -p ~/.config/clipbridge
-cp -n prototype/macos/config.example.json ~/.config/clipbridge/config.json
+cp -n src/config.example.json ~/.config/clipbridge/config.json
 chmod 600 ~/.config/clipbridge/config.json
 ```
 
@@ -58,7 +58,7 @@ Repeated `start` with the same configuration does not restart an active backgrou
 | File or directory | Purpose |
 | --- | --- |
 | [docs/usage.md](docs/usage.md) | Configuration, commands, runtime behavior and troubleshooting |
-| [prototype/macos/README.md](prototype/macos/README.md) | Source layout, build commands, tests and implementation boundaries |
+| [src/README.md](src/README.md) | Source layout, build commands, tests and implementation boundaries |
 | [docs/planning/product-direction-and-distribution.md](docs/planning/product-direction-and-distribution.md) | Product decisions, release requirements and future options |
 | [AGENTS.md](AGENTS.md) | Contributor and coding-agent guidelines |
 | [clipbridge](clipbridge) | Repository command-line entry point |
@@ -66,8 +66,8 @@ Repeated `start` with the same configuration does not restart an active backgrou
 ## Development
 
 ```sh
-make -C prototype/macos build
-make -C prototype/macos test
+make -C src build
+make -C src test
 ```
 
 Tests use mocked SSH/launchd operations, isolated subprocesses and a private test pasteboard. They do not upload your clipboard or install a background service. Release preparation still includes full real-host transfer and service-lifecycle checks, plus installation on another Mac.

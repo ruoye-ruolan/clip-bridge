@@ -2,9 +2,9 @@
 
 Last updated: 2026-09-30.
 
-This directory contains ClipBridge's Python orchestration and native Swift clipboard helpers. It retains the `prototype/macos/` path while the source toolkit is being prepared for a release. The supported repository entry point is [`../../clipbridge`](../../clipbridge).
+This directory contains ClipBridge's Python orchestration and native Swift clipboard helpers. The supported repository entry point is [`../clipbridge`](../clipbridge).
 
-For configuration and day-to-day commands, read the [user guide](../../docs/usage.md). Product and release decisions belong in the [planning document](../../docs/planning/product-direction-and-distribution.md).
+For configuration and day-to-day commands, read the [user guide](../docs/usage.md). Product and release decisions belong in the [planning document](../docs/planning/product-direction-and-distribution.md).
 
 ## Source Layout
 
@@ -38,22 +38,22 @@ The monitor keeps its lock through queued-upload draining. On a cooperative fore
 Run from the repository root on macOS with Python 3.9+, `swiftc` and `make` available:
 
 ```sh
-make -C prototype/macos build
-make -C prototype/macos test
+make -C src build
+make -C src test
 ```
 
 | Command | Purpose |
 | --- | --- |
-| `make -C prototype/macos test-python` | Run standard-library `unittest` discovery |
-| `make -C prototype/macos test-swift` | Compile and run the private-pasteboard integration test |
-| `make -C prototype/macos clean` | Remove generated helpers and test binaries |
-| `make -C prototype/macos build SWIFTC=/path/to/swiftc` | Select a Swift compiler |
-| `make -C prototype/macos test-python PYTHON=/path/to/python3` | Select a Python interpreter |
+| `make -C src test-python` | Run standard-library `unittest` discovery |
+| `make -C src test-swift` | Compile and run the private-pasteboard integration test |
+| `make -C src clean` | Remove generated helpers and test binaries |
+| `make -C src build SWIFTC=/path/to/swiftc` | Select a Swift compiler |
+| `make -C src test-python PYTHON=/path/to/python3` | Select a Python interpreter |
 | `git diff --check` | Check tracked changes for whitespace errors |
 
 `make configure`, `make doctor` and `make run` in this directory are convenience wrappers for the CLI. Unlike build/test targets, these can check a real SSH destination or start real monitoring. They are not automated validation steps.
 
-No third-party Python packages, formatter, linter or CI workflow is configured. Follow [Repository Guidelines](../../AGENTS.md) for contribution conventions.
+No third-party Python packages, formatter, linter or CI workflow is configured. Follow [Repository Guidelines](../AGENTS.md) for contribution conventions.
 
 ## Test Boundaries
 

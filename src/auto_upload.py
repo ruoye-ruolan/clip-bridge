@@ -165,7 +165,7 @@ def main(argv=None):
         parser.error(str(error))
     for helper in ('clipboard-watch', 'clipboard-path'):
         if not os.access(BASE / helper, os.X_OK):
-            parser.error('Missing compiled helpers; run make -C prototype/macos build')
+            parser.error('Missing compiled helpers; run make -C src build')
     os.umask(0o077)
     CACHE.mkdir(parents=True, exist_ok=True)
     # Keep the lock until the watcher and all queued uploads finish.
@@ -174,7 +174,7 @@ def main(argv=None):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         lock.close()
-        parser.error('Another ClipBridge prototype instance is already running')
+        parser.error('Another ClipBridge instance is already running')
     # ThreadPoolExecutor joins unfinished workers before Python's atexit handlers.
     # Retain this descriptor if Ctrl+C interrupts the join, so a replacement cannot
     # upload alongside workers that are still finishing during interpreter exit.

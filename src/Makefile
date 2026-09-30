@@ -28,13 +28,13 @@ test-swift: build $(BUILD)/clipboard-watch-test
 	./$(BUILD)/clipboard-watch-test ./$(BUILD)/clipboard-watch
 
 configure:
-	$(PYTHON) ../../clipbridge configure
+	$(PYTHON) ../clipbridge configure
 
 doctor:
-	$(PYTHON) ../../clipbridge doctor
+	$(PYTHON) ../clipbridge doctor
 
 run:
-	$(PYTHON) ../../clipbridge run
+	$(PYTHON) ../clipbridge run
 
 clean:
 	rm -rf $(BUILD)

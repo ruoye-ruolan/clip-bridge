@@ -5,7 +5,7 @@
 !.env.example
 __pycache__/
 *.py[cod]
-prototype/macos/build/
-prototype/macos/config.json
-prototype/macos/config.json.backup-*
-prototype/macos/launchd/local.clipbridge.prototype.plist
+src/build/
+src/config.json
+src/config.json.backup-*
+src/launchd/local.clipbridge.prototype.plist

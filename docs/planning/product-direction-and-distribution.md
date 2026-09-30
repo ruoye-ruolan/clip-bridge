@@ -4,7 +4,7 @@ Last updated: 2026-09-30.
 
 Status: Active plan. The first product is a macOS command-line toolkit. Source-based use is available; a packaged release is pending. Planned work below is not shipped functionality.
 
-See the [project overview](../../README.md), [usage guide](../usage.md) and [implementation guide](../../prototype/macos/README.md) for current behavior and development instructions.
+See the [project overview](../../README.md), [usage guide](../usage.md) and [implementation guide](../../src/README.md) for current behavior and development instructions.
 
 ## Product Decision
 
@@ -16,7 +16,7 @@ The toolkit can remain the long-term product. A graphical interface and cross-pl
 
 ## What Exists Today
 
-The root `clipbridge` command delegates to `prototype/macos/`, the source implementation underlying the CLI product.
+The root `clipbridge` command delegates to `src/`, the source implementation underlying the CLI product.
 
 - Configuration uses `~/.config/clipbridge/config.json`, with an explicit `ssh_host` alias and `remote_directory`. The latter is currently required. The wizard can resolve a remote-home default and save the resulting absolute path.
 - `run` monitors in the foreground. `start` enables background monitoring and startup at login. Repeating `start` with the same configuration path preserves an existing running service; a cooperating foreground instance can finish queued uploads and hand over to the background service.

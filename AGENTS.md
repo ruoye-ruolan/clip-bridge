@@ -10,10 +10,10 @@ ClipBridge is a macOS CLI toolkit that uploads clipboard images over SSH and ret
 - `docs/usage.md`: authoritative user-facing configuration, commands and troubleshooting.
 - `docs/planning/product-direction-and-distribution.md`: decisions and future release work.
 - `clipbridge`: command-line entry point.
-- `prototype/macos/`: Python CLI, configuration, service, handoff and upload modules.
-- `prototype/macos/swift/`: native clipboard helpers.
-- `prototype/macos/tests/`: unit, subprocess and private-pasteboard tests.
-- `prototype/macos/README.md`: source map and development instructions.
+- `src/`: Python CLI, configuration, service, handoff and upload modules.
+- `src/swift/`: native clipboard helpers.
+- `src/tests/`: unit, subprocess and private-pasteboard tests.
+- `src/README.md`: source map and development instructions.
 
 Keep operating instructions in the user guide and proposals in planning. Do not describe proposed functionality as implemented.
 
@@ -21,9 +21,9 @@ Keep operating instructions in the user guide and proposals in planning. Do not 
 
 Run from the repository root:
 
-- `make -C prototype/macos build`: compile helpers into ignored `build/`.
-- `make -C prototype/macos test`: run Python and Swift checks.
-- `make -C prototype/macos test-python`: run Python tests only.
+- `make -C src build`: compile helpers into ignored `build/`.
+- `make -C src test`: run Python and Swift checks.
+- `make -C src test-python`: run Python tests only.
 - `git diff --check`: check whitespace.
 
 File-based configuration is the primary setup flow. `configure` and `doctor` are optional. `run` enables foreground monitoring; `start`, `restart`, `stop` and `status` manage background operation. Never start services or upload personal clipboard contents merely to validate code.
@@ -46,4 +46,4 @@ Use concise Conventional Commit messages, such as `docs: clarify configuration` 
 
 ## Security & Configuration
 
-Never commit credentials, personal destinations, screenshots, logs or generated helpers. Default user settings live at `~/.config/clipbridge/config.json`; the ignored prototype-local file is a legacy fallback. Preserve input validation, SSH host-key checks, single-monitor locking and the MIT license.
+Never commit credentials, personal destinations, screenshots, logs or generated helpers. Default user settings live at `~/.config/clipbridge/config.json`; the ignored source-local file is a legacy fallback. Preserve input validation, SSH host-key checks, single-monitor locking and the MIT license.

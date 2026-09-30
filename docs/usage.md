@@ -4,7 +4,7 @@ Last updated: 2026-09-30.
 
 ClipBridge runs from this checkout on macOS. It monitors newly copied images, uploads them over SSH and places the remote file path on the clipboard. It has no application window or menu bar icon. Packaging for a downloadable release is pending.
 
-See the [project overview](../README.md), [development guide](../prototype/macos/README.md) and [product plan](planning/product-direction-and-distribution.md) for other repository documentation.
+See the [project overview](../README.md), [development guide](../src/README.md) and [product plan](planning/product-direction-and-distribution.md) for other repository documentation.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ From the repository root, create a configuration file without overwriting an exi
 
 ```sh
 mkdir -p ~/.config/clipbridge
-cp -n prototype/macos/config.example.json ~/.config/clipbridge/config.json
+cp -n src/config.example.json ~/.config/clipbridge/config.json
 chmod 600 ~/.config/clipbridge/config.json
 ```
 
@@ -143,13 +143,13 @@ Use your actual alias and absolute directory. For authentication errors, verify 
 | `~/Library/Caches/clipbridge/auto/upload-*` | Upload staging and retained failures |
 | `~/Library/Caches/clipbridge/auto/clipboard-*.png` | Captures awaiting upload |
 | `~/Library/Caches/clipbridge/auto/` | Also holds monitor/service locks and temporary `monitor.json` / `handoff.json` control state |
-| `prototype/macos/build/` | Generated native helper binaries |
+| `src/build/` | Generated native helper binaries |
 
 Keep the checkout at a stable path while its service is installed. Before moving it or replacing its Python installation, run `stop`, then run `start` from the new location. `stop` preserves configuration, logs and uploaded files. Inspect retained images and remove unneeded cache files only after all foreground and background monitoring has stopped. Remote cleanup is also manual.
 
 ## Migration
 
-If the default user configuration is absent, the ignored `prototype/macos/config.json` remains a fallback. `configure` can copy its settings into the default user file while preserving the original. Custom locations other than the default user configuration path do not use this fallback.
+If the default user configuration is absent, the ignored `src/config.json` remains a fallback. `configure` can copy its settings into the default user file while preserving the original. Custom locations other than the default user configuration path do not use this fallback.
 
 Loaded legacy services `local.codex.xnip-wsl` and `local.clipbridge.prototype` block monitoring. ClipBridge does not modify them. Unload only the uploader you intend to replace, for example:
 

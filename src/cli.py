@@ -1,4 +1,4 @@
-"""Guided setup and daily commands for the macOS ClipBridge prototype."""
+"""Guided setup and daily commands for the macOS ClipBridge toolkit."""
 import argparse
 from collections import deque
 import os
