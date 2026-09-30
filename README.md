@@ -4,21 +4,23 @@ Last updated: 2026-09-30.
 
 Copy an image on your Mac, upload it to a Linux or WSL host over SSH, and paste its remote file path into your workflow.
 
-ClipBridge is a command-line toolkit configured with a JSON file. It runs in the foreground or as a per-user background service. The source is available for development and trials; there is no packaged release or installer yet.
+ClipBridge is a user-installable command-line toolkit with JSON configuration, foreground/background operation, upgrades and removal. Installation builds the native helpers and copies the program out of the source checkout. Python 3.9+ remains required at runtime.
 
-## Quick Start
+## Install
 
-Requirements: macOS, Python 3.9+, Swift Command Line Tools with `make`, and a working SSH alias with noninteractive authentication and a verified host key. Run the commands below from this checkout.
-
-Create a configuration file without replacing existing settings:
+On macOS with Python 3.9+, `make` and Swift Command Line Tools, run from a trusted checkout or extracted source package:
 
 ```sh
-mkdir -p ~/.config/clipbridge
-cp -n src/config.example.json ~/.config/clipbridge/config.json
-chmod 600 ~/.config/clipbridge/config.json
+./install.sh
+export PATH="$HOME/.local/bin:$PATH"
+clipbridge --version
 ```
 
-Edit `~/.config/clipbridge/config.json`, replacing both example values:
+If needed, add the PATH export to your shell startup file for future terminals. No `sudo` is needed. Fresh installation does not start monitoring; an already loaded service from this checkout or a managed installation is migrated with its existing configuration.
+
+## Configure and Start
+
+Edit `~/.config/clipbridge/config.json`. Installation preserves an existing file or creates a sample:
 
 ```json
 {
@@ -27,50 +29,58 @@ Edit `~/.config/clipbridge/config.json`, replacing both example values:
 }
 ```
 
-`ssh_host` is the alias you use to connect. `remote_directory` is the image destination **on that remote host**. It is currently required and must be an absolute path; uploads attempt to create it if missing. See the [configuration reference](docs/usage.md) for accepted values.
+Replace both values. `ssh_host` is your SSH alias, using noninteractive authentication and a verified host key. `remote_directory` is a required absolute destination on that remote host; uploads attempt to create it if needed.
 
-Keep an interactive `ssh YOUR_ALIAS` session open. Enable background monitoring and startup at login:
+Keep a matching interactive `ssh YOUR_ALIAS` session open, then:
 
 ```sh
-./clipbridge start
+clipbridge start
 ```
 
-Newly copied images from **all applications** are eligible. After a successful upload, ClipBridge checks whether the clipboard changed before replacing its content with the remote path. Existing images at startup and images copied while no matching SSH session is detected are skipped. This transfers image files; it does not synchronize the remote operating system's clipboard.
-
-Neither the `configure` wizard nor `doctor` is required before starting. They are optional setup and diagnostic tools.
+Newly copied images from **all applications** are eligible. After uploading, ClipBridge checks whether the clipboard changed before replacing it with the remote path. Existing images at startup and images observed without a matching session are skipped. This transfers files; it does not synchronize the remote operating system's clipboard. The setup wizard and `doctor` diagnostics are optional.
 
 ## Everyday Commands
 
 | Command | Action |
 | --- | --- |
-| `./clipbridge start` | Start background monitoring, switch from a cooperating foreground monitor, or report the existing background instance |
-| `./clipbridge run` | Monitor in the foreground; stop with Ctrl+C |
-| `./clipbridge restart` | Reload settings by restarting background monitoring |
-| `./clipbridge stop` | Stop the background service and disable startup at login |
-| `./clipbridge status` | Show monitor/service state |
-| `./clipbridge logs --follow` | Follow background upload logs |
-| `./clipbridge doctor` | Optionally check tools, SSH access and existing directory permissions |
+| `clipbridge start` | Start background monitoring or report the existing instance; switch from a cooperating foreground monitor |
+| `clipbridge run` | Monitor in the foreground; stop with Ctrl+C |
+| `clipbridge restart` | Reload settings by restarting background monitoring |
+| `clipbridge stop` | Stop the background service and disable login startup |
+| `clipbridge status` | Show monitor/service state |
+| `clipbridge logs --follow` | Follow background logs |
+| `clipbridge doctor` | Optionally check tools, SSH access and existing directory permissions |
 
-Repeated `start` with the same configuration does not restart an active background service. Configuration edits require `restart`, or stopping and rerunning foreground mode. See the [user guide](docs/usage.md) for handoff behavior, custom configuration paths, migration and troubleshooting.
+Repeated `start` does not interrupt a running service using the same configuration file. See the [usage guide](docs/usage.md) for handoff behavior, custom configuration and troubleshooting.
+
+## Upgrade and Uninstall
+
+```sh
+clipbridge upgrade --from /path/to/new-source-or-extracted-package
+clipbridge uninstall
+```
+
+Upgrade builds the new version before switching, preserves configuration and attempts to restore the previous version if activation fails. Uninstall removes the managed program and service, keeping configuration, logs and images. See the [installation guide](docs/installation.md) for runtime requirements, custom prefixes and recovery behavior.
 
 ## Repository Guide
 
 | File or directory | Purpose |
 | --- | --- |
+| [docs/installation.md](docs/installation.md) | Installation, upgrades, removal and source distributions |
 | [docs/usage.md](docs/usage.md) | Configuration, commands, runtime behavior and troubleshooting |
 | [src/README.md](src/README.md) | Source layout, build commands, tests and implementation boundaries |
-| [docs/planning/product-direction-and-distribution.md](docs/planning/product-direction-and-distribution.md) | Product decisions, release requirements and future options |
+| [Product plan](docs/planning/product-direction-and-distribution.md) | Release requirements and future options |
 | [AGENTS.md](AGENTS.md) | Contributor and coding-agent guidelines |
-| [clipbridge](clipbridge) | Repository command-line entry point |
 
-## Development
+## Development and Packaging
 
 ```sh
-make -C src build
-make -C src test
+make build
+make test
+make package
 ```
 
-Tests use mocked SSH/launchd operations, isolated subprocesses and a private test pasteboard. They do not upload your clipboard or install a background service. Release preparation still includes full real-host transfer and service-lifecycle checks, plus installation on another Mac.
+`make package` produces a versioned source archive and checksum under `dist/`; it does not publish a release. Tests isolate service/network operations and use a private test pasteboard. Installation lifecycle tests compile real helpers in temporary prefixes and verify operation after deleting the source tree. Remote transfer reliability and broader machine/OS coverage remain release-validation work.
 
 ## License
 

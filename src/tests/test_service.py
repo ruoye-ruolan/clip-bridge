@@ -99,6 +99,22 @@ class ServiceTests(unittest.TestCase):
         self.command.assert_not_called()
         self.assertFalse(service._plist_path().exists())
 
+    def test_installed_runtime_uses_bundled_helpers_without_make(self):
+        (self.root.parent / '.clipbridge-release.json').write_text('{}')
+        (self.root / 'build').mkdir()
+        for name in ('clipboard-watch', 'clipboard-path'):
+            helper = self.root / 'build' / name
+            helper.touch()
+            helper.chmod(0o755)
+        service._build_helpers()
+        self.command.assert_not_called()
+
+    def test_missing_installed_helper_requires_reinstallation(self):
+        (self.root.parent / '.clipbridge-release.json').write_text('{}')
+        with self.assertRaisesRegex(RuntimeError, 'Reinstall'):
+            service._build_helpers()
+        self.command.assert_not_called()
+
     def test_start_is_idempotent_for_running_service_with_same_config(self):
         self.jobs[service.LABEL] = 'pid = 52\n'
         self.install_plist()

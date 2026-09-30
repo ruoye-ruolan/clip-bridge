@@ -3,6 +3,9 @@
 from pathlib import Path
 import sys
 
+if sys.version_info < (3, 9):
+    raise SystemExit('ClipBridge requires Python 3.9 or later.')
+
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
 from cli import main
 

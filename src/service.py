@@ -12,6 +12,7 @@ import tempfile
 from xml.parsers.expat import ExpatError
 
 import configuration
+import runtime
 
 
 HOME = Path.home()
@@ -149,6 +150,9 @@ def _validate_config(config_path):
 
 
 def _build_helpers():
+    if runtime.is_installed(ROOT):
+        runtime.require_helpers(ROOT)
+        return
     build = _run(['make', '-C', str(ROOT), 'build'], timeout=180)
     if build.returncode != 0:
         raise RuntimeError('Could not build clipboard helpers: ' + _details(build))
@@ -220,15 +224,14 @@ def start(config_path):
         return _start(config_path)
 
 
-def _install_service(config_path):
-    path = _plist_path()
-    previous = path.read_bytes() if path.exists() else None
-    log_path().parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    plist = {
+def _service_definition(config_path, *, source_root=None, python_executable=None):
+    root = Path(source_root) if source_root is not None else ROOT
+    interpreter = python_executable or str(Path(sys.executable).resolve())
+    return {
         'Label': LABEL,
-        'ProgramArguments': [str(Path(sys.executable).resolve()), '-u',
-                             str(ROOT / 'auto_upload.py'), '--config', str(config_path)],
-        'WorkingDirectory': str(ROOT),
+        'ProgramArguments': [str(interpreter), '-u',
+                             str(root / 'auto_upload.py'), '--config', str(config_path)],
+        'WorkingDirectory': str(root),
         'RunAtLoad': True,
         'KeepAlive': True,
         'ProcessType': 'Background',
@@ -237,6 +240,14 @@ def _install_service(config_path):
         'StandardOutPath': str(log_path()),
         'StandardErrorPath': str(log_path()),
     }
+
+
+def _install_service(config_path, *, source_root=None, python_executable=None):
+    path = _plist_path()
+    previous = path.read_bytes() if path.exists() else None
+    log_path().parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    plist = _service_definition(config_path, source_root=source_root,
+                                python_executable=python_executable)
     try:
         _atomic_write(path, plistlib.dumps(plist))
         result = _run([LAUNCHCTL, 'bootstrap', _domain(), str(path)])

@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-30.
 
-Status: Active plan. The first product is a macOS command-line toolkit. Source-based use is available; a packaged release is pending. Planned work below is not shipped functionality.
+Status: Active plan. The first product is a macOS command-line toolkit. User installation and versioned source packaging are implemented; broader release validation is pending. Planned work below is not shipped functionality.
 
 See the [project overview](../../README.md), [usage guide](../usage.md) and [implementation guide](../../src/README.md) for current behavior and development instructions.
 
@@ -24,7 +24,7 @@ The root `clipbridge` command delegates to `src/`, the source implementation und
 - `status` and `logs` expose service state and background records. `doctor` optionally checks tools, configuration, SSH access and an existing destination without starting monitoring.
 - New images are uploaded sequentially while a matching SSH session is detected. Startup clipboard contents and images observed offline are skipped. Failed uploads retain local copies; successful uploads attempt to preserve newer clipboard content.
 
-Current use requires a checkout, Python and macOS tools; Swift helpers are built locally. There is no published installer, bundled Python runtime, `install` command or `uninstall` command. The generated background service depends on the checkout and Python paths remaining available.
+The toolkit now provides `install.sh`, `install`, `upgrade --from PATH`, `uninstall` and `--version`. Installation builds helpers, creates an owned user-prefix payload and command launcher, and preserves configuration outside the program. Upgrades stage a new version before switching, restore an already loaded service and attempt rollback on failure. Removal preserves configuration, logs and images. `make package` creates a versioned source archive and checksum. Installed operation no longer depends on the checkout; Python remains an external dependency. Source installation/upgrades still require macOS build tools.
 
 ## Boundaries to Resolve
 
@@ -41,10 +41,10 @@ Clipboard polling can miss rapid changes, and the final change-count check and w
 | Upload reliability | Repeatable cases cover startup images, offline skipping, reconnection without deferred uploads, consecutive copies, authentication failures, interrupted transfers and preservation of newer clipboard contents. Define queue limits and what happens at capacity. |
 | Service lifecycle | Validate real launchd startup, repeat `start`, foreground handoff, `restart`, logout/login and `stop`. Confirm one monitor runs and document interruption behavior. |
 | Data lifecycle | Define failed-image retention, log cleanup, remote-file ownership and partial-transfer handling. Make manual recovery instructions clear. |
-| Packaging | Choose runtime requirements and whether to distribute precompiled Swift helpers. Provide a versioned artifact with repeatable installation, upgrade, legacy migration and removal procedures that preserve settings as documented. |
+| Packaging | Validate the implemented source installer/archive on another Mac, including failed upgrades, existing-service migration and removal. Decide later whether bundled Python or precompiled cross-machine artifacts are needed. |
 | Independent use | Complete real SSH upload scenarios and a second-Mac setup from the published instructions without live assistance. Validate WSL separately before claiming WSL compatibility. |
 
-Automated tests use mocked SSH and service operations, plus private-pasteboard integration checks. They provide regression evidence but do not replace the real-host and service acceptance checks above. Record actual results and remaining limits with the release.
+Automated tests use mocked SSH and service operations, private-pasteboard checks, and real compilation/install/upgrade/removal in temporary prefixes. Installed-command tests remove the source copy before execution. They provide regression evidence but do not replace the real-host and service acceptance checks above. Record actual results and remaining limits with the release.
 
 ## Later Decisions
 

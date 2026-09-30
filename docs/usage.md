@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-30.
 
-ClipBridge runs from this checkout on macOS. It monitors newly copied images, uploads them over SSH and places the remote file path on the clipboard. It has no application window or menu bar icon. Packaging for a downloadable release is pending.
+ClipBridge runs as an installed macOS command-line tool. It monitors newly copied images, uploads them over SSH and places the remote file path on the clipboard. It has no application window or menu bar icon. See the [installation guide](installation.md) to install from a checkout or extracted source package.
 
 See the [project overview](../README.md), [development guide](../src/README.md) and [product plan](planning/product-direction-and-distribution.md) for other repository documentation.
 
@@ -10,7 +10,7 @@ See the [project overview](../README.md), [development guide](../src/README.md) 
 
 - macOS with a logged-in graphical user session.
 - Python 3.9 or later; no third-party Python packages are required.
-- Xcode or Command Line Tools providing `swiftc` and `make`. Install missing Command Line Tools with `xcode-select --install`.
+- Installation/upgrades need `swiftc` and `make` from Xcode or Command Line Tools. Normal installed operation uses bundled helpers. Python must remain available.
 - A Linux or WSL host with a literal SSH alias in `~/.ssh/config`.
 - Noninteractive SSH authentication and a verified host key. ClipBridge cannot prompt for passwords or accept unknown host keys automatically.
 
@@ -18,13 +18,7 @@ First connect normally with `ssh YOUR_ALIAS` to verify the server identity and a
 
 ## Configure the Destination
 
-From the repository root, create a configuration file without overwriting an existing one:
-
-```sh
-mkdir -p ~/.config/clipbridge
-cp -n src/config.example.json ~/.config/clipbridge/config.json
-chmod 600 ~/.config/clipbridge/config.json
-```
+Installation preserves your existing configuration or creates a sample at `~/.config/clipbridge/config.json`.
 
 Edit `~/.config/clipbridge/config.json` in your preferred editor:
 
@@ -54,17 +48,17 @@ Keep a matching interactive SSH session open in one terminal:
 ssh dev-server
 ```
 
-In another terminal, from the repository root:
+In another terminal:
 
 ```sh
-./clipbridge start
+clipbridge start
 ```
 
-Replace `dev-server` with your configured alias. `start` builds the native helpers as needed, launches a per-user background service and enables startup at login. You can close the command's terminal afterward; the matching SSH session must remain open for uploads.
+Replace `dev-server` with your configured alias. `start` uses the installed native helpers, launches a per-user background service and enables startup at login. You can close the command's terminal afterward; the matching SSH session must remain open for uploads.
 
 Copy an image, wait for the upload, then paste its remote path, such as `/home/example/.local/share/clipbridge/images/shot-UUID.png`. Notifications are attempted; their visibility depends on macOS notification settings. Images from **all applications** can trigger uploads.
 
-For a temporary foreground session with logs in the terminal, use `./clipbridge run`. Stop it with Ctrl+C; queued uploads may delay exit. Foreground mode does not install a login service and cannot run alongside an existing monitor.
+For a temporary foreground session with logs in the terminal, use `clipbridge run`. Stop it with Ctrl+C; queued uploads may delay exit. Foreground mode does not install a login service and cannot run alongside an existing monitor.
 
 `doctor` is optional troubleshooting, not a prerequisite for `run` or `start`.
 
@@ -72,15 +66,15 @@ For a temporary foreground session with logs in the terminal, use `./clipbridge 
 
 | Command | Behavior |
 | --- | --- |
-| `./clipbridge start` | Start background monitoring, or report the existing service using the same configuration file; resume it if loaded without a running process |
-| `./clipbridge restart` | Restart background monitoring and reload the selected configuration |
-| `./clipbridge stop` | Stop the background service and disable login startup; foreground monitors are unaffected |
-| `./clipbridge status` | Show process/service state, not connectivity or upload health |
-| `./clipbridge logs` | Print the latest 50 background log lines, including uploaded paths |
-| `./clipbridge logs --follow` | Follow background logs; use `--lines NUMBER` to change the initial count |
-| `./clipbridge run` | Monitor in the foreground and log to the terminal |
-| `./clipbridge doctor` | Check tools, configuration, legacy service conflicts, SSH authentication and existing destination permissions |
-| `./clipbridge configure` | Run the optional setup wizard |
+| `clipbridge start` | Start background monitoring, or report the existing service using the same configuration file; resume it if loaded without a running process |
+| `clipbridge restart` | Restart background monitoring and reload the selected configuration |
+| `clipbridge stop` | Stop the background service and disable login startup; foreground monitors are unaffected |
+| `clipbridge status` | Show process/service state, not connectivity or upload health |
+| `clipbridge logs` | Print the latest 50 background log lines, including uploaded paths |
+| `clipbridge logs --follow` | Follow background logs; use `--lines NUMBER` to change the initial count |
+| `clipbridge run` | Monitor in the foreground and log to the terminal |
+| `clipbridge doctor` | Check tools, configuration, legacy service conflicts, SSH authentication and existing destination permissions |
+| `clipbridge configure` | Run the optional setup wizard |
 
 Repeating `start` does not interrupt a running background service or reload edits. After changing JSON, use `restart`; for foreground mode, stop and rerun it. A background restart may interrupt an active transfer and does not drain its upload queue.
 
@@ -89,11 +83,11 @@ Running `start` while a current `run` session is active requests a cooperative s
 To select a configuration elsewhere:
 
 ```sh
-./clipbridge --config /absolute/path/to/config.json start
-./clipbridge --config /absolute/path/to/config.json restart
+clipbridge --config /absolute/path/to/config.json start
+clipbridge --config /absolute/path/to/config.json restart
 ```
 
-Every command accepts `--config` before or after the subcommand. Relative paths resolve from the current directory. Switching a loaded service to another file requires `restart`. There is only one service per user: `stop`, `status` and `logs` address that service regardless of `--config`.
+Runtime commands accept `--config` before or after the subcommand. Installation commands use `--prefix` as described in the [installation guide](installation.md). Relative paths resolve from the current directory. Switching a loaded service to another file requires `restart`. There is only one service per user: `stop`, `status` and `logs` address that service regardless of `--config`.
 
 ## Upload Behavior and Limits
 
@@ -106,29 +100,29 @@ Every command accepts `--config` before or after the subcommand. Relative paths 
 
 ## Optional Setup Wizard
 
-`./clipbridge configure` lists literal aliases from `~/.ssh/config` and included files, then saves the same JSON configuration. Alias discovery supplies suggestions without evaluating `Match` rules; you can enter an alias manually. For a new target, accepting the directory default resolves `.local/share/clipbridge/images` under the **remote** user's home directory.
+`clipbridge configure` lists literal aliases from `~/.ssh/config` and included files, then saves the same JSON configuration. Alias discovery supplies suggestions without evaluating `Match` rules; you can enter an alias manually. For a new target, accepting the directory default resolves `.local/share/clipbridge/images` under the **remote** user's home directory.
 
 The wizard checks SSH access, creates the directory if needed and creates/removes a temporary write probe before saving. It does not start monitoring. Failed checks preserve existing settings; a successful replacement of invalid JSON first saves a `config.json.backup-*` file. Wizard-created configuration files have owner-only permissions.
 
 Scripted setup is also available:
 
 ```sh
-./clipbridge configure --host dev-server
-./clipbridge configure --host dev-server --remote-dir /home/example/images
-./clipbridge configure --host dev-server --remote-dir /home/example/images --no-check
+clipbridge configure --host dev-server
+clipbridge configure --host dev-server --remote-dir /home/example/images
+clipbridge configure --host dev-server --remote-dir /home/example/images --no-check
 ```
 
 Replace the examples with your destination. `--no-check` saves offline and requires both an explicit `--host` and absolute `--remote-dir`.
 
 ## Troubleshooting
 
-Run `./clipbridge doctor` when configuration or uploads fail. It does not start monitoring or create the remote directory. A missing matching session is reported as waiting, even if the host is reachable.
+Run `clipbridge doctor` when configuration or uploads fail. It does not start monitoring or create the remote directory. A missing matching session is reported as waiting, even if the host is reachable.
 
 Because `doctor` requires an existing directory, it can fail for a new destination that an upload would create. To check that destination in advance, create it yourself or use `configure`. For the example above:
 
 ```sh
 ssh dev-server 'umask 077; mkdir -p -- /home/example/.local/share/clipbridge/images'
-./clipbridge doctor
+clipbridge doctor
 ```
 
 Use your actual alias and absolute directory. For authentication errors, verify ordinary SSH access, host-key trust and key/agent availability. For missing uploads, check the exact alias, open session and logs. If a lifecycle command reports another operation in progress, wait for that command to finish before retrying.
@@ -143,13 +137,14 @@ Use your actual alias and absolute directory. For authentication errors, verify 
 | `~/Library/Caches/clipbridge/auto/upload-*` | Upload staging and retained failures |
 | `~/Library/Caches/clipbridge/auto/clipboard-*.png` | Captures awaiting upload |
 | `~/Library/Caches/clipbridge/auto/` | Also holds monitor/service locks and temporary `monitor.json` / `handoff.json` control state |
-| `src/build/` | Generated native helper binaries |
+| `~/.local/share/clipbridge/current/src/build/` | Installed native helper binaries |
+| `~/.local/bin/clipbridge` | Installed command launcher |
 
-Keep the checkout at a stable path while its service is installed. Before moving it or replacing its Python installation, run `stop`, then run `start` from the new location. `stop` preserves configuration, logs and uploaded files. Inspect retained images and remove unneeded cache files only after all foreground and background monitoring has stopped. Remote cleanup is also manual.
+The installed program does not depend on the checkout. Keep its managed prefix and Python interpreter available; reinstall with an available interpreter if Python is replaced. See [upgrade and removal](installation.md) before changing program files. `stop` preserves configuration, logs and uploaded files. Inspect retained images and remove unneeded cache files only after all foreground and background monitoring has stopped. Remote cleanup is also manual.
 
 ## Migration
 
-If the default user configuration is absent, the ignored `src/config.json` remains a fallback. `configure` can copy its settings into the default user file while preserving the original. Custom locations other than the default user configuration path do not use this fallback.
+For source-tree development, if the default user configuration is absent, the ignored `src/config.json` remains a fallback. Installation migrates this file when needed without copying it into program payloads. `configure` can copy its settings into the default user file while preserving the original. Custom locations other than the default user configuration path do not use this fallback.
 
 Loaded legacy services `local.codex.xnip-wsl` and `local.clipbridge.prototype` block monitoring. ClipBridge does not modify them. Unload only the uploader you intend to replace, for example:
 

@@ -15,6 +15,7 @@ from configuration import (
     load_config, save_config, validate_config, validate_host,
 )
 import service
+import runtime
 
 ROOT = Path(__file__).resolve().parent
 
@@ -26,8 +27,16 @@ def config_option(parser, default=argparse.SUPPRESS):
 
 def parser_for_cli():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--version', action='version', version='ClipBridge ' + runtime.version())
     config_option(parser, DEFAULT_CONFIG)
     commands = parser.add_subparsers(dest='command', required=True)
+    install = commands.add_parser('install', help='install this source tree into a user prefix')
+    install.add_argument('--prefix', type=Path, help='installation prefix (default: ~/.local)')
+    upgrade = commands.add_parser('upgrade', help='upgrade from a trusted local checkout or extracted source package')
+    upgrade.add_argument('--from', dest='source', type=Path, required=True)
+    upgrade.add_argument('--prefix', type=Path, help='installation prefix to upgrade')
+    uninstall = commands.add_parser('uninstall', help='remove the installed program; preserve config, logs and images')
+    uninstall.add_argument('--prefix', type=Path, help='installation prefix to remove')
     setup = commands.add_parser('configure', help='choose a destination and save configuration')
     setup.add_argument('--host', help='SSH config alias; omit for the interactive wizard')
     setup.add_argument('--remote-dir', help='absolute remote directory; default: remote home/.local/share/clipbridge/images')
@@ -117,7 +126,8 @@ def configure(args):
         print(f'Copied settings from {previous}; the original file was preserved.')
     print(f'Saved configuration: {path}\nDestination: {host}:{remote}')
     print('Monitoring covers images from all applications and may replace the clipboard with a remote path.')
-    command = './clipbridge' if path == DEFAULT_CONFIG else f'./clipbridge --config {shlex.quote(str(path))}'
+    entry = 'clipbridge' if runtime.is_installed() else './clipbridge'
+    command = entry if path == DEFAULT_CONFIG else f'{entry} --config {shlex.quote(str(path))}'
     print(f'Next: keep an interactive SSH session open, then run {command} start (or {command} run).')
     print(f'If ClipBridge is already running, use {command} restart to apply changes.')
 
@@ -132,6 +142,8 @@ def check_local_tools():
     helpers = all(os.access(ROOT / 'build' / name, os.X_OK)
                   for name in ('clipboard-watch', 'clipboard-path'))
     if not helpers:
+        if runtime.is_installed():
+            runtime.require_helpers()
         if not shutil.which('make') or not shutil.which('swiftc'):
             raise RuntimeError('Install Xcode Command Line Tools (xcode-select --install) to build clipboard helpers.')
         print('Clipboard helpers will be compiled on the first start or run.')
@@ -160,7 +172,7 @@ def run_foreground(path):
     load_config(path)
     service.check_foreground_available()
     check_local_tools()
-    subprocess.run(['make', '-C', str(ROOT), 'build'], check=True, timeout=180)
+    service._build_helpers()
     print('Monitoring newly copied images from all applications. Press Ctrl+C to stop.', flush=True)
     os.execv(sys.executable, [sys.executable, '-u', str(ROOT / 'auto_upload.py'),
                              '--config', str(path.resolve()), '--foreground'])
@@ -184,7 +196,14 @@ def main(argv=None):
     try:
         args = parser_for_cli().parse_args(argv)
         path = existing_config(args.config.expanduser())
-        if args.command == 'configure':
+        if args.command in ('install', 'upgrade', 'uninstall'):
+            import installer
+            if args.command == 'uninstall':
+                print(installer.uninstall(prefix=args.prefix))
+            else:
+                source = args.source if args.command == 'upgrade' else ROOT.parent
+                print(installer.install(source, prefix=args.prefix, upgrade=args.command == 'upgrade'))
+        elif args.command == 'configure':
             configure(args)
         elif args.command == 'doctor':
             doctor(path)

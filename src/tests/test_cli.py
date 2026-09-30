@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import cli
 import configuration
+import installer
 
 
 class CliTests(unittest.TestCase):
@@ -147,10 +148,24 @@ class CliTests(unittest.TestCase):
             self.assertEqual(self.command('restart'), 0)
         restart.assert_called_once_with(self.path)
 
+    def test_install_upgrade_and_uninstall_dispatch_without_monitoring(self):
+        prefix = Path(self.temp.name) / 'prefix'
+        source = Path(self.temp.name) / 'new-source'
+        with patch.object(installer, 'install', return_value='Installed') as install, \
+                patch.object(installer, 'uninstall', return_value='Uninstalled') as uninstall, \
+                patch.object(cli.service, 'start') as start:
+            self.assertEqual(self.command('install', '--prefix', str(prefix)), 0)
+            install.assert_called_with(cli.ROOT.parent, prefix=prefix, upgrade=False)
+            self.assertEqual(self.command('upgrade', '--from', str(source), '--prefix', str(prefix)), 0)
+            install.assert_called_with(source, prefix=prefix, upgrade=True)
+            self.assertEqual(self.command('uninstall', '--prefix', str(prefix)), 0)
+            uninstall.assert_called_once_with(prefix=prefix)
+            start.assert_not_called()
+
     def test_foreground_run_enables_cooperative_handoff(self):
         configuration.save_config(self.path, 'server', '/home/test/images')
         with patch.object(cli.service, 'check_foreground_available'), \
-                patch.object(cli, 'check_local_tools'), patch.object(cli.subprocess, 'run'), \
+                patch.object(cli, 'check_local_tools'), patch.object(cli.service, '_build_helpers'), \
                 patch.object(cli.os, 'execv') as execute:
             self.assertEqual(self.command('run'), 0)
         self.assertIn('--foreground', execute.call_args.args[1])
