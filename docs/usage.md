@@ -9,8 +9,8 @@ See the [project overview](../README.md), [development guide](../src/README.md) 
 ## Requirements
 
 - macOS with a logged-in graphical user session.
-- Python 3.9 or later; no third-party Python packages are required.
-- Installation/upgrades need `swiftc` and `make` from Xcode or Command Line Tools. Normal installed operation uses bundled helpers. Python must remain available.
+- The installed Rust executable; no Python, Swift or Rust toolchain is needed for normal operation.
+- Source installation/upgrades need Rust 1.94+, Cargo and Apple's linker/SDK from Xcode or Command Line Tools. See [installation](installation.md) for the first upgrade from Python 0.1.
 - A Linux or WSL host with a literal SSH alias in `~/.ssh/config`.
 - Noninteractive SSH authentication and a verified host key. ClipBridge cannot prompt for passwords or accept unknown host keys automatically.
 
@@ -54,7 +54,7 @@ In another terminal:
 clipbridge start
 ```
 
-Replace `dev-server` with your configured alias. `start` uses the installed native helpers, launches a per-user background service and enables startup at login. You can close the command's terminal afterward; the matching SSH session must remain open for uploads.
+Replace `dev-server` with your configured alias. `start` launches the native executable as a per-user background service and enables startup at login. You can close the command's terminal afterward; the matching SSH session must remain open for uploads.
 
 Copy an image, wait for the upload, then paste its remote path, such as `/home/example/.local/share/clipbridge/images/shot-UUID.png`. Notifications are attempted; their visibility depends on macOS notification settings. Images from **all applications** can trigger uploads.
 
@@ -94,9 +94,10 @@ Runtime commands accept `--config` before or after the subcommand. Installation 
 - Startup ignores existing clipboard content. New PNG, TIFF or JPEG clipboard images are captured as PNG; text alone is ignored.
 - Uploads require a same-user `ssh ALIAS` process with an established TCP socket. The alias must match the configured value. This is a heuristic, not proof of authentication; multiplexing, jump hosts, remote commands and IDE-managed connections are not guaranteed.
 - Images copied without a matching session are skipped and are not uploaded after reconnecting. Each queued job checks the session again before starting; jobs skipped after disconnect are not retained for later upload.
-- Captured images upload sequentially. The queue has no size limit, and polling can miss very rapid clipboard changes. Captures that become stale before extraction are skipped.
+- Captured images upload sequentially, with room for 16 pending uploads in addition to the active transfer. When full, the queue skips the newly captured image, removes that capture and logs the skip; already queued images remain. Polling can miss very rapid clipboard changes. Captures that become stale before extraction are skipped.
 - On success, the path replaces the clipboard only if its change count still matches. Newer contents are preserved on a best-effort basis: checking and replacing are not atomic. Find a successful upload's path in the log if it was not copied.
 - Failed uploads retain a local copy when available and log the error. There is no automatic retry or cleanup. Successful uploads remove their staging copies. Remote files remain indefinitely; interrupted transfers can leave partial remote files.
+- Notifications run separately with room for 16 pending notifications. A full notification queue skips the new notification without blocking clipboard updates or changing the upload result; logs remain available.
 
 ## Optional Setup Wizard
 
@@ -137,12 +138,14 @@ Use your actual alias and absolute directory. For authentication errors, verify 
 | `~/Library/Caches/clipbridge/auto/upload-*` | Upload staging and retained failures |
 | `~/Library/Caches/clipbridge/auto/clipboard-*.png` | Captures awaiting upload |
 | `~/Library/Caches/clipbridge/auto/` | Also holds monitor/service locks and temporary `monitor.json` / `handoff.json` control state |
-| `~/.local/share/clipbridge/current/src/build/` | Installed native helper binaries |
+| `~/.local/share/clipbridge/current/clipbridge` | Installed native Rust executable |
 | `~/.local/bin/clipbridge` | Installed command launcher |
 
-The installed program does not depend on the checkout. Keep its managed prefix and Python interpreter available; reinstall with an available interpreter if Python is replaced. See [upgrade and removal](installation.md) before changing program files. `stop` preserves configuration, logs and uploaded files. Inspect retained images and remove unneeded cache files only after all foreground and background monitoring has stopped. Remote cleanup is also manual.
+The installed program does not depend on the checkout or a language toolchain. Keep its managed installation prefix in place. See [upgrade and removal](installation.md) before changing program files. `stop` preserves configuration, logs and uploaded files. Inspect retained images and remove unneeded cache files only after all foreground and background monitoring has stopped. Remote cleanup is also manual.
 
 ## Migration
+
+For Python 0.1 installations, run `./install.sh` from the new Rust source directory for the first migration. The old Python upgrade command cannot use the Rust source layout. Existing JSON settings remain compatible; see [migration instructions](installation.md#migrate-from-python-01).
 
 For source-tree development, if the default user configuration is absent, the ignored `src/config.json` remains a fallback. Installation migrates this file when needed without copying it into program payloads. `configure` can copy its settings into the default user file while preserving the original. Custom locations other than the default user configuration path do not use this fallback.
 

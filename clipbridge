@@ -1,13 +1,5 @@
-#!/usr/bin/env python3
-"""Repository entry point for the ClipBridge command-line toolkit."""
-from pathlib import Path
-import sys
-
-if sys.version_info < (3, 9):
-    raise SystemExit('ClipBridge requires Python 3.9 or later.')
-
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
-from cli import main
-
-if __name__ == '__main__':
-    raise SystemExit(main())
+#!/bin/sh
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+CARGO_TARGET_DIR="$project_dir/target" cargo build --quiet --release --locked --bin clipbridge --manifest-path "$project_dir/Cargo.toml"
+exec "$project_dir/target/release/clipbridge" "$@"

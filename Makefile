@@ -1,12 +1,17 @@
-PYTHON ?= python3
-
-.PHONY: build test package
+.PHONY: build test check package clean
 
 build:
-	$(MAKE) -C src build
+	cargo build --release --locked --bin clipbridge
 
 test:
-	$(MAKE) -C src test PYTHON="$(PYTHON)"
+	cargo test --locked
+
+check:
+	cargo fmt --check
+	cargo clippy --all-targets --locked -- -D warnings
 
 package:
-	$(PYTHON) tools/package.py
+	cargo run --release --locked --bin package
+
+clean:
+	cargo clean

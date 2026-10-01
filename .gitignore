@@ -10,3 +10,4 @@ src/config.json
 src/config.json.backup-*
 src/launchd/local.clipbridge.prototype.plist
 dist/
+target/
