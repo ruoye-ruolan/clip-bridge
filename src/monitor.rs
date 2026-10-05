@@ -133,15 +133,19 @@ fn notify(ctx: &Context, message: &str) {
 }
 
 struct Capture {
-    count: i64,
     path: PathBuf,
 }
 
 enum UploadOutcome {
     Uploaded {
-        count: i64,
         local: PathBuf,
         remote: String,
+        remote_clipboard: bool,
+    },
+    RemoteClipboardFailed {
+        local: PathBuf,
+        remote: String,
+        error: anyhow::Error,
     },
     Skipped,
     Failed {
@@ -165,7 +169,7 @@ fn capture(
     };
     let path = ctx.cache().join(format!("clipboard-{}.png", unique_id()));
     atomic_write(&path, &png, 0o600)?;
-    Ok(Some(Capture { count, path }))
+    Ok(Some(Capture { path }))
 }
 
 fn upload(ctx: &Context, config: &Config, capture: Capture) -> UploadOutcome {
@@ -215,10 +219,19 @@ fn upload(ctx: &Context, config: &Config, capture: Capture) -> UploadOutcome {
                 .timeout(120)
                 .uncancellable(),
         )?;
+        if config.remote_clipboard
+            && let Err(error) = crate::remote::publish(ctx, config, &remote)
+        {
+            return Ok(UploadOutcome::RemoteClipboardFailed {
+                local,
+                remote,
+                error,
+            });
+        }
         Ok(UploadOutcome::Uploaded {
-            count: capture.count,
             local,
             remote,
+            remote_clipboard: config.remote_clipboard,
         })
     })();
     result.unwrap_or_else(|error| UploadOutcome::Failed {
@@ -227,50 +240,54 @@ fn upload(ctx: &Context, config: &Config, capture: Capture) -> UploadOutcome {
     })
 }
 
-fn finish_upload(clipboard: &impl ClipboardAccess, outcome: UploadOutcome) -> Option<&'static str> {
+fn finish_upload(outcome: UploadOutcome) -> Option<&'static str> {
     match outcome {
         UploadOutcome::Uploaded {
-            count,
             local,
             remote,
-        } => match clipboard.set_path_if(count, &remote) {
-            Ok(copied) => {
-                log(format_args!(
-                    "Uploaded {} -> {remote}; {}",
-                    local.display(),
-                    if copied {
-                        "copied"
-                    } else {
-                        "newer clipboard preserved"
-                    }
-                ));
-                let cleanup = fs::remove_file(&local).and_then(|()| {
-                    if let Some(parent) = local.parent() {
-                        fs::remove_dir(parent)
-                    } else {
-                        Ok(())
-                    }
-                });
-                if let Err(error) = cleanup {
-                    log(format_args!(
-                        "Could not clean successful upload {}: {error}",
-                        local.display()
-                    ));
-                }
-                Some(if copied {
-                    "Uploaded; remote path copied."
+            remote_clipboard,
+        } => {
+            log(format_args!(
+                "Uploaded {} -> {remote}; local clipboard unchanged{}",
+                local.display(),
+                if remote_clipboard {
+                    "; remote image clipboard ready"
                 } else {
-                    "Uploaded; newer clipboard preserved. See the log for the path."
-                })
-            }
-            Err(error) => {
+                    ""
+                },
+            ));
+            let cleanup = fs::remove_file(&local).and_then(|()| {
+                if let Some(parent) = local.parent() {
+                    fs::remove_dir(parent)
+                } else {
+                    Ok(())
+                }
+            });
+            if let Err(error) = cleanup {
                 log(format_args!(
-                    "Uploaded to {remote}, but clipboard update failed: {error:#}; retained at {}",
+                    "Could not clean successful upload {}: {error}",
                     local.display()
                 ));
-                Some("Uploaded, but clipboard update failed. See the log for the path.")
             }
-        },
+            Some(if remote_clipboard {
+                "Uploaded; remote image clipboard ready; local clipboard unchanged."
+            } else {
+                "Uploaded; clipboard unchanged."
+            })
+        }
+        UploadOutcome::RemoteClipboardFailed {
+            local,
+            remote,
+            error,
+        } => {
+            log(format_args!(
+                "Uploaded to {remote}, but remote clipboard sync failed: {error:#}; local clipboard unchanged; image retained at {}",
+                local.display()
+            ));
+            Some(
+                "Uploaded, but remote clipboard sync failed; local image retained. See the ClipBridge log.",
+            )
+        }
         UploadOutcome::Skipped => None,
         UploadOutcome::Failed { local, error } => {
             log(format_args!(
@@ -282,12 +299,8 @@ fn finish_upload(clipboard: &impl ClipboardAccess, outcome: UploadOutcome) -> Op
     }
 }
 
-fn complete(
-    clipboard: &impl ClipboardAccess,
-    outcome: UploadOutcome,
-    notifications: &SyncSender<&'static str>,
-) -> Result<()> {
-    if let Some(message) = finish_upload(clipboard, outcome) {
+fn complete(outcome: UploadOutcome, notifications: &SyncSender<&'static str>) -> Result<()> {
+    if let Some(message) = finish_upload(outcome) {
         match notifications.try_send(message) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => log(
@@ -335,7 +348,7 @@ fn intake(
     let mut previous = clipboard.change_count();
     while !ctx.cancelled.load(Ordering::SeqCst) && !registration.handoff_requested()? {
         for outcome in results.try_iter() {
-            complete(clipboard, outcome, notifications)?;
+            complete(outcome, notifications)?;
         }
         let current = clipboard.change_count();
         if current != previous {
@@ -411,7 +424,7 @@ fn run_with_clipboard(
         // and registration above can drop. No clipboard object crosses threads.
         let mut completion_result = Ok(());
         for outcome in results {
-            if let Err(error) = complete(clipboard, outcome, &notifications) {
+            if let Err(error) = complete(outcome, &notifications) {
                 completion_result = Err(error);
             }
         }
@@ -432,7 +445,7 @@ fn run_with_clipboard(
 mod tests {
     use super::*;
     use crate::common::{CommandOutput, Runner, lock_held};
-    use std::cell::{Cell, RefCell};
+    use std::cell::Cell;
     use std::sync::{Arc, Mutex, atomic::AtomicBool};
     use std::time::Instant;
 
@@ -449,6 +462,7 @@ mod tests {
         listing: Mutex<Option<String>>,
         offline: AtomicBool,
         fail_scp: AtomicBool,
+        fail_publish: AtomicBool,
         check_drain: Option<PathBuf>,
         expect_cancelled: bool,
         notification_gate: Option<Arc<NotificationGate>>,
@@ -504,7 +518,27 @@ mod tests {
                         gate.finished.store(true, Ordering::SeqCst);
                     }
                 }
-                "/usr/bin/ssh" => {}
+                "/usr/bin/ssh" => {
+                    if spec
+                        .args
+                        .last()
+                        .is_some_and(|arg| arg.to_string_lossy().contains(" publish -- "))
+                    {
+                        if let Some(cache) = &self.check_drain {
+                            assert!(lock_held(&cache.join("watcher.lock")).unwrap());
+                            assert!(cache.join("monitor.json").exists());
+                            if self.expect_cancelled {
+                                assert!(cancelled.load(Ordering::SeqCst));
+                            }
+                            assert!(!spec.cancellable);
+                            fs::write(cache.join("publish-finished"), b"finished").unwrap();
+                        }
+                        if self.fail_publish.load(Ordering::SeqCst) {
+                            output.code = 1;
+                            output.stderr = "test remote clipboard failure".into();
+                        }
+                    }
+                }
                 unexpected => panic!("Unexpected subprocess: {unexpected}"),
             }
             Ok(output)
@@ -515,8 +549,6 @@ mod tests {
         count: Cell<i64>,
         image: bool,
         stale_capture: bool,
-        fail_set: bool,
-        set_calls: RefCell<Vec<(i64, String)>>,
         count_reads: Cell<usize>,
         produce_after_baseline: bool,
         cancel_after_capture: Option<Arc<AtomicBool>>,
@@ -529,8 +561,6 @@ mod tests {
                 count: Cell::new(10),
                 image: true,
                 stale_capture: false,
-                fail_set: false,
-                set_calls: RefCell::new(vec![]),
                 count_reads: Cell::new(0),
                 produce_after_baseline: false,
                 cancel_after_capture: None,
@@ -563,13 +593,6 @@ mod tests {
                     .then(|| b"test PNG bytes".to_vec()),
             )
         }
-        fn set_path_if(&self, expected: i64, path: &str) -> Result<bool> {
-            self.set_calls.borrow_mut().push((expected, path.into()));
-            if self.fail_set {
-                bail!("test clipboard write failure");
-            }
-            Ok(self.count.get() == expected)
-        }
     }
 
     fn context(home: &Path, runner: Arc<FakeRunner>) -> Context {
@@ -587,13 +610,14 @@ mod tests {
         Config {
             ssh_host: "dev-server".into(),
             remote_directory: "/home/example/images".into(),
+            remote_clipboard: false,
         }
     }
 
     fn captured(ctx: &Context) -> Capture {
         let path = ctx.cache().join("capture.png");
         atomic_write(&path, b"test PNG bytes", 0o600).unwrap();
-        Capture { count: 10, path }
+        Capture { path }
     }
 
     #[test]
@@ -704,17 +728,15 @@ mod tests {
         runner.fail_scp.store(true, Ordering::SeqCst);
         let ctx = context(home.path(), runner.clone());
         let board = FakeClipboard::default();
-        let outcome = upload(&ctx, &config(), captured(&ctx));
+        let image = capture(&ctx, &config(), &board, 10).unwrap().unwrap();
+        let outcome = upload(&ctx, &config(), image);
         let UploadOutcome::Failed { ref local, .. } = outcome else {
             panic!("Upload should fail");
         };
         assert_eq!(fs::read(local).unwrap(), b"test PNG bytes");
-        assert!(
-            finish_upload(&board, outcome)
-                .unwrap()
-                .contains("Upload failed")
-        );
-        assert!(board.set_calls.borrow().is_empty());
+        assert!(finish_upload(outcome).unwrap().contains("Upload failed"));
+        assert_eq!(board.count.get(), 10);
+        assert_eq!(board.capture_png(10).unwrap().unwrap(), b"test PNG bytes");
         let calls = runner.calls.lock().unwrap();
         let scp = calls
             .iter()
@@ -728,16 +750,18 @@ mod tests {
     }
 
     #[test]
-    fn success_uses_snapshot_count_and_preserves_newer_clipboard() {
+    fn successful_upload_never_replaces_original_or_newer_clipboard() {
         for changed in [false, true] {
             let home = tempfile::tempdir().unwrap();
             let runner = Arc::new(FakeRunner::default());
             let ctx = context(home.path(), runner.clone());
-            let board = FakeClipboard::default();
+            let mut board = FakeClipboard::default();
+            let image = capture(&ctx, &config(), &board, 10).unwrap().unwrap();
             if changed {
                 board.count.set(11);
+                board.image = false;
             }
-            let outcome = upload(&ctx, &config(), captured(&ctx));
+            let outcome = upload(&ctx, &config(), image);
             let UploadOutcome::Uploaded {
                 ref local,
                 ref remote,
@@ -749,38 +773,121 @@ mod tests {
             let local = local.clone();
             let remote = remote.clone();
             assert!(remote.starts_with("/home/example/images/shot-"));
-            let notification = finish_upload(&board, outcome).unwrap();
-            assert_eq!(board.set_calls.borrow()[0], (10, remote));
+            let notification = finish_upload(outcome).unwrap();
+            assert_eq!(board.count.get(), if changed { 11 } else { 10 });
+            assert_eq!(board.has_image(), !changed);
+            if !changed {
+                assert_eq!(board.capture_png(10).unwrap().unwrap(), b"test PNG bytes");
+            }
             assert!(!local.exists());
             assert!(!local.parent().unwrap().exists());
-            assert!(notification.contains(if changed {
-                "newer clipboard preserved"
-            } else {
-                "remote path copied"
-            }));
+            assert!(notification.contains("clipboard unchanged"));
+            assert_eq!(
+                runner
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|call| call.program == Path::new("/usr/bin/ssh"))
+                    .count(),
+                1,
+                "remote clipboard must be opt-in"
+            );
         }
     }
 
     #[test]
-    fn clipboard_write_error_preserves_local_upload() {
+    fn enabled_remote_clipboard_publishes_after_upload_without_changing_local_image() {
         let home = tempfile::tempdir().unwrap();
         let runner = Arc::new(FakeRunner::default());
-        let ctx = context(home.path(), runner);
-        let board = FakeClipboard {
-            fail_set: true,
-            ..FakeClipboard::default()
+        let ctx = context(home.path(), runner.clone());
+        let mut config = config();
+        config.remote_clipboard = true;
+        let board = FakeClipboard::default();
+        let image = capture(&ctx, &config, &board, 10).unwrap().unwrap();
+        let outcome = upload(&ctx, &config, image);
+        let UploadOutcome::Uploaded {
+            ref remote,
+            remote_clipboard: true,
+            ..
+        } = outcome
+        else {
+            panic!("Remote clipboard publication should succeed");
         };
-        let outcome = upload(&ctx, &config(), captured(&ctx));
-        let UploadOutcome::Uploaded { ref local, .. } = outcome else {
-            panic!("expected upload");
+        let calls = runner.calls.lock().unwrap();
+        let publish = calls.last().unwrap();
+        assert_eq!(publish.program, Path::new("/usr/bin/ssh"));
+        assert_eq!(calls[calls.len() - 2].program, Path::new("/usr/bin/scp"));
+        assert_eq!(publish.args[publish.args.len() - 2], "dev-server");
+        let remote_command = publish.args.last().unwrap().to_string_lossy();
+        assert_eq!(
+            shell_words::split(&remote_command).unwrap(),
+            [
+                "exec",
+                "$HOME/.local/bin/clipbridge-remote",
+                "publish",
+                "--",
+                remote
+            ]
+        );
+        assert!(!publish.cancellable);
+        assert!(publish.timeout <= Duration::from_secs(35));
+        for option in SSH_OPTIONS {
+            assert!(publish.args.iter().any(|arg| arg == option));
+        }
+        drop(calls);
+        assert!(
+            finish_upload(outcome)
+                .unwrap()
+                .contains("remote image clipboard ready")
+        );
+        assert_eq!(board.count.get(), 10);
+        assert_eq!(board.capture_png(10).unwrap().unwrap(), b"test PNG bytes");
+    }
+
+    #[test]
+    fn remote_clipboard_failure_reports_partial_success_and_retains_local_image() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        runner.fail_publish.store(true, Ordering::SeqCst);
+        let ctx = context(home.path(), runner);
+        let mut config = config();
+        config.remote_clipboard = true;
+        let outcome = upload(&ctx, &config, captured(&ctx));
+        let UploadOutcome::RemoteClipboardFailed {
+            ref local,
+            ref remote,
+            ..
+        } = outcome
+        else {
+            panic!("File upload should succeed while remote clipboard fails");
         };
         let local = local.clone();
-        assert!(
-            finish_upload(&board, outcome)
-                .unwrap()
-                .contains("clipboard update failed")
-        );
+        assert!(remote.starts_with("/home/example/images/shot-"));
+        assert_eq!(fs::read(&local).unwrap(), b"test PNG bytes");
+        let notification = finish_upload(outcome).unwrap();
+        assert!(notification.contains("Uploaded, but remote clipboard sync failed"));
+        assert!(!notification.contains("ready"));
         assert!(local.is_file());
+    }
+
+    #[test]
+    fn failed_file_transfer_never_publishes_remote_clipboard() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        runner.fail_scp.store(true, Ordering::SeqCst);
+        let ctx = context(home.path(), runner.clone());
+        let mut config = config();
+        config.remote_clipboard = true;
+        assert!(matches!(
+            upload(&ctx, &config, captured(&ctx)),
+            UploadOutcome::Failed { .. }
+        ));
+        assert!(runner.calls.lock().unwrap().iter().all(|call| {
+            call.args
+                .last()
+                .is_none_or(|arg| !arg.to_string_lossy().contains(" publish -- "))
+        }));
     }
 
     #[test]
@@ -839,9 +946,13 @@ mod tests {
             cancel_after_capture: Some(ctx.cancelled.clone()),
             ..FakeClipboard::default()
         };
-        run_with_clipboard(&ctx, &ctx.default_config(), &config(), true, &board).unwrap();
+        let mut config = config();
+        config.remote_clipboard = true;
+        run_with_clipboard(&ctx, &ctx.default_config(), &config, true, &board).unwrap();
         assert!(cache.join("worker-finished").exists());
-        assert_eq!(board.set_calls.borrow().len(), 1);
+        assert!(cache.join("publish-finished").exists());
+        assert_eq!(board.count.get(), 11);
+        assert!(board.has_image());
         assert!(!lock_held(&cache.join("watcher.lock")).unwrap());
         assert!(!cache.join("monitor.json").exists());
     }
@@ -862,7 +973,8 @@ mod tests {
         };
         assert!(run_with_clipboard(&ctx, &ctx.default_config(), &config(), true, &board).is_err());
         assert!(cache.join("worker-finished").exists());
-        assert_eq!(board.set_calls.borrow().len(), 1);
+        assert_eq!(board.count.get(), 11);
+        assert!(board.has_image());
         assert!(!lock_held(&cache.join("watcher.lock")).unwrap());
         assert!(!cache.join("monitor.json").exists());
     }
@@ -915,9 +1027,6 @@ mod tests {
             }
             fn capture_png(&self, _: i64) -> Result<Option<Vec<u8>>> {
                 panic!("An offline snapshot must never be captured after reconnection");
-            }
-            fn set_path_if(&self, _: i64, _: &str) -> Result<bool> {
-                panic!("No upload means no clipboard write");
             }
         }
         let board = ReconnectClipboard {
@@ -972,9 +1081,6 @@ mod tests {
                 }
                 Ok(Some(b"test PNG bytes".to_vec()))
             }
-            fn set_path_if(&self, _: i64, _: &str) -> Result<bool> {
-                Ok(true)
-            }
         }
         let board = TwoImages {
             reads: Cell::new(0),
@@ -998,19 +1104,11 @@ mod tests {
             let path = home.path().join(format!("pending-{index}.png"));
             fs::write(&path, b"queued image").unwrap();
             existing.push(path.clone());
-            submit_capture(
-                &sender,
-                Capture {
-                    count: index as i64,
-                    path,
-                },
-            )
-            .unwrap();
+            submit_capture(&sender, Capture { path }).unwrap();
         }
         let discarded = home.path().join("new-image.png");
         fs::write(&discarded, b"new image").unwrap();
         let extra = Capture {
-            count: 99,
             path: discarded.clone(),
         };
         let (done, result) = mpsc::channel();
@@ -1029,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn full_notification_queue_preserves_clipboard_write_without_blocking() {
+    fn full_notification_queue_completes_upload_cleanup_without_blocking() {
         let home = tempfile::tempdir().unwrap();
         let local = home.path().join("upload-test/shot.png");
         atomic_write(&local, b"uploaded image", 0o600).unwrap();
@@ -1038,23 +1136,20 @@ mod tests {
             notifications.try_send("existing notification").unwrap();
         }
         let outcome = UploadOutcome::Uploaded {
-            count: 10,
             local: local.clone(),
             remote: "/home/example/images/shot.png".into(),
+            remote_clipboard: false,
         };
         let (done, result) = mpsc::channel();
         let worker = thread::spawn(move || {
-            let board = FakeClipboard::default();
-            let completion = complete(&board, outcome, &notifications);
-            done.send((completion, board.set_calls.borrow().len()))
-                .unwrap();
+            done.send(complete(outcome, &notifications)).unwrap();
         });
         let completion = result.recv_timeout(Duration::from_secs(1));
         drop(pending);
         worker.join().unwrap();
-        let (result, writes) = completion.expect("Full notification queue blocked completion");
-        result.unwrap();
-        assert_eq!(writes, 1);
+        completion
+            .expect("Full notification queue blocked completion")
+            .unwrap();
         assert!(!local.exists());
     }
 }

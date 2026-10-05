@@ -1,10 +1,10 @@
 # ClipBridge
 
-Last updated: 2026-09-30.
+Last updated: 2026-10-03.
 
-Copy an image on your Mac, upload it to a Linux or WSL host over SSH, and paste its remote file path into your workflow.
+Copy an image on your Mac and keep pasting it as an image locally. ClipBridge uploads a copy over SSH and can make it available to a remote CLI through a private Linux image clipboard.
 
-ClipBridge 0.2 is implemented entirely in Rust, including native macOS clipboard access. The installed program is one native executable: it needs no Python, Swift helpers or Rust toolchain at runtime. It uses the system SSH/SCP clients and your existing SSH configuration.
+ClipBridge 0.3.1 is implemented in Rust, including native macOS clipboard access and the optional Linux companion. The installed Mac program is one native executable with no language runtime requirement. Remote image pasting additionally needs Xvfb, xauth and xclip on the SSH host; see [remote image setup](docs/remote-images.md).
 
 ## Install or Migrate from Python 0.1
 
@@ -18,7 +18,7 @@ clipbridge --version
 
 If needed, add the PATH export to your shell startup file. No `sudo` is needed. Existing configuration is preserved, and an already loaded service from this checkout or the managed installation is migrated. Fresh installation does not enable monitoring.
 
-**For the first Python 0.1 → Rust 0.2 migration, run this new `install.sh`.** The older installed Python `upgrade` command cannot install a Rust-only source tree. Once migrated, future Rust upgrades use `clipbridge upgrade --from PATH`.
+**For migration from Python 0.1, run this new `install.sh`.** The older installed Python `upgrade` command cannot install a Rust-only source tree. Existing Rust installations use `clipbridge upgrade --from PATH`.
 
 ## Configure and Start
 
@@ -39,7 +39,28 @@ Keep a matching interactive `ssh YOUR_ALIAS` session open, then:
 clipbridge start
 ```
 
-Newly copied images from **all applications** are eligible. After upload, ClipBridge checks for newer clipboard content before writing the remote path. Startup clipboard contents and images observed without a matching session are skipped. This transfers image files; it does not synchronize the remote operating system's clipboard. The setup wizard and `doctor` are optional.
+Newly copied images from **all applications** are eligible. ClipBridge never changes the Mac clipboard, so local image paste remains available. Startup clipboard contents and images observed without a matching session are skipped. With the configuration above, images are uploaded only; paths appear in logs instead of replacing the clipboard. The setup wizard and `doctor` are optional.
+
+## Paste Images in a Remote CLI
+
+Prepare the remote Linux dependencies and Rust 1.94+/Cargo on both hosts as described in the [remote image guide](docs/remote-images.md). Setup vendors dependencies on the Mac, then builds offline on Linux. On your Mac:
+
+```sh
+clipbridge remote setup
+clipbridge restart
+```
+
+Setup installs shell integration for remote Bash or Zsh. Reconnect SSH once after setup, then start the desired CLI normally inside an ordinary `ssh dev-server` session:
+
+```sh
+codex
+# Or:
+claude
+```
+
+Arguments work as usual, for example `codex resume`. The shell integration obtains the private clipboard connection for each launch without changing the parent shell's display settings. Existing aliases/functions are preserved; see the [manual fallback](docs/remote-images.md#manual-launch-and-custom-shells) if you see a conflict warning or your shell is unsupported.
+
+Copy a new image and wait for the remote-ready notification or log entry before using the CLI's image-paste shortcut. Exit existing CLI processes once and relaunch them after reconnecting. Ghostty keybindings are unchanged. Real Ghostty/CLI attachment acceptance testing remains pending.
 
 ## Everyday Commands
 
@@ -52,6 +73,8 @@ Newly copied images from **all applications** are eligible. After upload, ClipBr
 | `clipbridge status` | Show monitor/service state |
 | `clipbridge logs --follow` | Follow background logs |
 | `clipbridge doctor` | Optionally check SSH access and existing directory permissions |
+| `clipbridge remote doctor` | Check remote image clipboard dependencies |
+| `clipbridge remote status` | Show remote helper state |
 
 Repeated `start` does not interrupt a service using the same configuration file. See the [usage guide](docs/usage.md) for handoff behavior, queue limits, custom configuration and troubleshooting.
 
@@ -70,6 +93,7 @@ Upgrade compiles the selected source before invoking its installer, preserves co
 | --- | --- |
 | [docs/installation.md](docs/installation.md) | Installation, migration, upgrades, removal and source distributions |
 | [docs/usage.md](docs/usage.md) | Configuration, commands, runtime behavior and troubleshooting |
+| [docs/remote-images.md](docs/remote-images.md) | Linux companion setup and image pasting in SSH CLI sessions |
 | [src/README.md](src/README.md) | Rust modules, build commands, tests and implementation boundaries |
 | [Product plan](docs/planning/product-direction-and-distribution.md) | Remaining release validation and future options |
 | [AGENTS.md](AGENTS.md) | Contributor and coding-agent guidelines |
@@ -83,7 +107,7 @@ make test
 make package
 ```
 
-The checks run rustfmt, Clippy and Rust tests. Native clipboard tests use a private named pasteboard. Service and network tests are isolated; installation tests copy the real executable and verify it after deleting their source fixture. `make package` creates an allowlisted source archive and checksum under `dist/`, without publishing a release.
+The checks cover both Rust crates. Native clipboard tests use a private named pasteboard; remote tests use isolated state and fake X tools. Service and network tests are isolated; installation tests verify the executable after deleting their source fixture. `make package` creates an allowlisted source archive and checksum under `dist/`, without publishing a release.
 
 ## License
 

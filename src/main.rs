@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use clipbridge::{
     common::{self, CommandSpec, Context},
     config::{self, Config},
-    monitor, service,
+    monitor, remote, service,
 };
 use std::collections::VecDeque;
 use std::fs::{self, File};
@@ -62,6 +62,11 @@ enum Action {
     },
     #[command(about = "Check tools, SSH access and existing destination permissions")]
     Doctor,
+    #[command(about = "Manage the SSH host image clipboard bridge")]
+    Remote {
+        #[command(subcommand)]
+        command: RemoteAction,
+    },
     #[command(about = "Ensure background monitoring and login startup are enabled")]
     Start,
     #[command(about = "Restart background monitoring and reload settings")]
@@ -83,6 +88,24 @@ enum Action {
     Monitor,
     #[command(hide = true)]
     ClipboardSelfTest,
+}
+
+#[derive(Subcommand)]
+enum RemoteAction {
+    #[command(about = "Set up image clipboard support on the configured SSH host")]
+    Setup {
+        #[arg(
+            long,
+            help = "Keep manual wrapper startup instead of installing shell integration"
+        )]
+        no_shell: bool,
+    },
+    #[command(about = "Check remote image clipboard support")]
+    Doctor,
+    #[command(about = "Show remote image clipboard status")]
+    Status,
+    #[command(about = "Stop remote image clipboard support")]
+    Stop,
 }
 
 fn prompt(ctx: &Context, message: &str) -> Result<String> {
@@ -195,13 +218,16 @@ fn configure(
             directory = Some(input);
         }
     }
-    let new = if no_check {
+    let mut new = if no_check {
         println!("SSH connection and destination permissions were not checked.");
         Config::new(host, directory.context("missing remote directory")?)?
     } else {
         println!("Checking SSH and preparing the destination...");
         config::check_destination(ctx, &host, directory.as_deref(), true)?
     };
+    new.remote_clipboard = previous
+        .as_ref()
+        .is_some_and(|old| old.ssh_host == new.ssh_host && old.remote_clipboard);
     if ctx.cancelled.load(Ordering::SeqCst) {
         bail!("setup cancelled");
     }
@@ -221,6 +247,14 @@ fn configure(
         new.ssh_host,
         new.remote_directory
     );
+    if previous
+        .as_ref()
+        .is_some_and(|old| old.remote_clipboard && old.ssh_host != new.ssh_host)
+    {
+        println!(
+            "SSH target changed; run clipbridge remote setup to enable its image clipboard support."
+        );
+    }
     println!(
         "Monitoring covers images from all applications. Start with clipbridge start or clipbridge run."
     );
@@ -384,6 +418,16 @@ fn execute(cli: Cli, ctx: &Context) -> Result<()> {
             no_check,
         } => configure(ctx, cli.config.as_deref(), host, remote_dir, no_check)?,
         Action::Doctor => doctor(ctx, &path)?,
+        Action::Remote { command } => println!(
+            "{}",
+            match command {
+                RemoteAction::Setup { no_shell } =>
+                    remote::setup_with_shell(ctx, &path, !no_shell)?,
+                RemoteAction::Doctor => remote::doctor(ctx, &path)?,
+                RemoteAction::Status => remote::status(ctx, &path)?,
+                RemoteAction::Stop => remote::stop(ctx, &path)?,
+            }
+        ),
         Action::Start => println!("{}", service::start(ctx, &path)?),
         Action::Restart => println!("{}", service::restart(ctx, &path)?),
         Action::Stop => println!("{}", service::stop(ctx)?),
@@ -431,5 +475,68 @@ fn main() {
         } else {
             1
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clipbridge::common::{CommandOutput, Runner};
+    use std::sync::atomic::AtomicBool;
+
+    struct NoCommands;
+    impl Runner for NoCommands {
+        fn run(&self, _: &CommandSpec, _: &AtomicBool) -> Result<CommandOutput> {
+            panic!("Offline configuration must not invoke external commands");
+        }
+    }
+
+    #[test]
+    fn reconfigure_preserves_remote_clipboard_only_for_same_host() {
+        for host in ["original", "different"] {
+            let home = tempfile::tempdir().unwrap();
+            let ctx = Context {
+                home: home.path().to_owned(),
+                executable: home.path().join("clipbridge"),
+                source: None,
+                uid: 501,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                runner: Arc::new(NoCommands),
+            };
+            let path = ctx.default_config();
+            let mut initial = Config::new("original", "/tmp/original").unwrap();
+            initial.remote_clipboard = true;
+            initial.save(&path).unwrap();
+            configure(&ctx, None, Some(host.into()), Some("/tmp/new".into()), true).unwrap();
+            let saved = Config::load(&path).unwrap();
+            assert_eq!(saved.ssh_host, host);
+            assert_eq!(saved.remote_directory, "/tmp/new");
+            assert_eq!(saved.remote_clipboard, host == "original");
+        }
+    }
+
+    #[test]
+    fn remote_subcommands_accept_global_config() {
+        for action in ["setup", "doctor", "status", "stop"] {
+            let cli = Cli::try_parse_from([
+                "clipbridge",
+                "remote",
+                action,
+                "--config",
+                "/tmp/settings.json",
+            ])
+            .unwrap();
+            assert!(matches!(cli.command, Action::Remote { .. }));
+            assert_eq!(cli.config, Some(PathBuf::from("/tmp/settings.json")));
+        }
+        assert!(Cli::try_parse_from(["clipbridge", "remote"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["clipbridge", "remote", "setup", "--no-shell"])
+                .unwrap()
+                .command,
+            Action::Remote {
+                command: RemoteAction::Setup { no_shell: true }
+            }
+        ));
     }
 }

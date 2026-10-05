@@ -5,10 +5,13 @@ build:
 
 test:
 	cargo test --locked
+	cargo test --manifest-path remote/Cargo.toml --locked
 
 check:
 	cargo fmt --check
 	cargo clippy --all-targets --locked -- -D warnings
+	cargo fmt --manifest-path remote/Cargo.toml --check
+	cargo clippy --manifest-path remote/Cargo.toml --all-targets --locked -- -D warnings
 
 package:
 	cargo run --release --locked --bin package

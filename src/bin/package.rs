@@ -16,9 +16,14 @@ const RUST_FILES: &[&str] = &[
     "src/monitor.rs",
     "src/service.rs",
     "src/installer.rs",
+    "src/remote.rs",
     "src/bin/package.rs",
     "tests/cli.rs",
     "tests/installation.rs",
+    "remote/src/main.rs",
+    "remote/src/shell.rs",
+    "remote/tests/cli.rs",
+    "remote/tests/shell.rs",
 ];
 
 fn source_root() -> Result<PathBuf> {
@@ -73,6 +78,8 @@ fn package(root: &Path) -> Result<PathBuf> {
         "src/Makefile",
         "src/README.md",
         "src/config.example.json",
+        "remote/Cargo.toml",
+        "remote/Cargo.lock",
     ]
     .into_iter()
     .map(PathBuf::from)
@@ -146,12 +153,18 @@ mod tests {
             "src/Makefile",
             "src/README.md",
             "src/config.example.json",
+            "remote/Cargo.toml",
+            "remote/Cargo.lock",
         ] {
-            fs::write(dir.path().join(name), b"fixture").unwrap();
+            let path = dir.path().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"fixture").unwrap();
         }
         fs::write(dir.path().join("VERSION"), env!("CARGO_PKG_VERSION")).unwrap();
         for name in RUST_FILES.iter().copied().chain(["docs/usage.md"]) {
-            fs::write(dir.path().join(name), b"fixture").unwrap();
+            let path = dir.path().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"fixture").unwrap();
         }
         for name in [
             "src/config.json",

@@ -4,4 +4,5 @@ pub mod config;
 pub mod control;
 pub mod installer;
 pub mod monitor;
+pub mod remote;
 pub mod service;

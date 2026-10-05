@@ -7,13 +7,12 @@ use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard};
 use objc2_foundation::{NSArray, NSData, NSDictionary, NSString, ns_string};
 
+/// Read-only clipboard access: capturing an image must never replace its contents.
 pub trait ClipboardAccess {
     fn change_count(&self) -> i64;
     fn has_image(&self) -> bool;
     /// Return `None` when the snapshot is stale or contains no decodable image.
     fn capture_png(&self, expected: i64) -> Result<Option<Vec<u8>>>;
-    /// Replace the current snapshot with a path, preserving newer clipboard content.
-    fn set_path_if(&self, expected: i64, path: &str) -> Result<bool>;
 }
 
 pub struct NativeClipboard {
@@ -90,28 +89,6 @@ impl ClipboardAccess for NativeClipboard {
             Ok(None)
         })
     }
-
-    fn set_path_if(&self, expected: i64, path: &str) -> Result<bool> {
-        autoreleasepool(|_| {
-            let path = NSString::from_str(path);
-            if self.change_count() != expected {
-                return Ok(false);
-            }
-            // NSPasteboard has no atomic compare-and-swap API. Keep the interval
-            // between checking and clearing small; also detect loss of ownership
-            // after clearing instead of writing over another application's item.
-            let owned_count = self.board.clearContents();
-            if self.board.changeCount() != owned_count {
-                return Ok(false);
-            }
-            ensure!(
-                self.board
-                    .setString_forType(&path, ns_string!("public.utf8-plain-text")),
-                "macOS refused to write the uploaded path to the clipboard"
-            );
-            Ok(true)
-        })
-    }
 }
 
 /// Exercise the real AppKit implementation using only a unique private pasteboard.
@@ -154,6 +131,7 @@ pub fn self_test() -> Result<()> {
             "could not seed private PNG pasteboard"
         );
         let image_count = clipboard.change_count();
+        let original_types = clipboard.board.types();
         ensure!(
             image_count != baseline,
             "image did not change the pasteboard count"
@@ -167,6 +145,15 @@ pub fn self_test() -> Result<()> {
             clipboard.capture_png(baseline)?.is_none(),
             "stale image capture was accepted"
         );
+        ensure!(
+            clipboard.change_count() == image_count
+                && clipboard.board.types() == original_types
+                && clipboard
+                    .board
+                    .dataForType(ns_string!("public.png"))
+                    .is_some_and(|data| data.to_vec() == PNG),
+            "PNG capture modified the original clipboard image, type or change count"
+        );
 
         for (format, kind) in [
             (NSBitmapImageFileType::TIFF, ns_string!("public.tiff")),
@@ -179,8 +166,10 @@ pub fn self_test() -> Result<()> {
                 "could not seed converted test image"
             );
             ensure!(clipboard.has_image(), "TIFF/JPEG image was not detected");
+            let count = clipboard.change_count();
+            let original_types = clipboard.board.types();
             let captured = clipboard
-                .capture_png(clipboard.change_count())?
+                .capture_png(count)?
                 .context("TIFF/JPEG image capture failed")?;
             ensure!(captured.starts_with(&PNG[..8]), "capture is not PNG data");
             let decoded = NSBitmapImageRep::initWithData(
@@ -191,6 +180,15 @@ pub fn self_test() -> Result<()> {
             ensure!(
                 decoded.pixelsWide() == 1 && decoded.pixelsHigh() == 1,
                 "image dimensions changed during conversion"
+            );
+            ensure!(
+                clipboard.change_count() == count
+                    && clipboard.board.types() == original_types
+                    && clipboard
+                        .board
+                        .dataForType(kind)
+                        .is_some_and(|data| data.to_vec() == image.to_vec()),
+                "conversion modified the original clipboard image, type or change count"
             );
         }
 
@@ -218,26 +216,17 @@ pub fn self_test() -> Result<()> {
             !clipboard.has_image(),
             "plain text was detected as an image"
         );
+        let text_count = clipboard.change_count();
+        let text_types = clipboard.board.types();
         ensure!(
             clipboard.capture_png(image_count)?.is_none(),
             "stale capture accepted newer text"
         );
         ensure!(
-            !clipboard.set_path_if(image_count, "/remote/stale.png")?,
-            "stale conditional write was accepted"
-        );
-        ensure!(
-            clipboard.board.stringForType(text_type).as_deref() == Some(newer_text),
-            "stale write damaged newer clipboard text"
-        );
-        ensure!(
-            clipboard.set_path_if(clipboard.change_count(), "/remote/图片 with spaces.png")?,
-            "current conditional write was rejected"
-        );
-        ensure!(
-            clipboard.board.stringForType(text_type).as_deref()
-                == Some(ns_string!("/remote/图片 with spaces.png")),
-            "conditional path write produced different text"
+            clipboard.change_count() == text_count
+                && clipboard.board.types() == text_types
+                && clipboard.board.stringForType(text_type).as_deref() == Some(newer_text),
+            "stale capture modified newer clipboard text, type or change count"
         );
         Ok(())
     })

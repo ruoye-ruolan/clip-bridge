@@ -1,8 +1,8 @@
 # ClipBridge Usage Guide
 
-Last updated: 2026-09-30.
+Last updated: 2026-10-03.
 
-ClipBridge runs as an installed macOS command-line tool. It monitors newly copied images, uploads them over SSH and places the remote file path on the clipboard. It has no application window or menu bar icon. See the [installation guide](installation.md) to install from a checkout or extracted source package.
+ClipBridge monitors newly copied Mac images and uploads copies over SSH while leaving the Mac clipboard unchanged. Optional remote image support makes an uploaded image available to a CLI launched through the Linux companion. It has no application window or menu bar icon. See [installation](installation.md) and [remote image setup](remote-images.md).
 
 See the [project overview](../README.md), [development guide](../src/README.md) and [product plan](planning/product-direction-and-distribution.md) for other repository documentation.
 
@@ -35,6 +35,7 @@ Replace both example values:
 | --- | --- |
 | `ssh_host` | Required: the exact alias used in `ssh ALIAS`, containing only letters, digits, underscores, dots and hyphens; it must begin with a letter or digit |
 | `remote_directory` | Required: the destination directory on the remote host, writable by the SSH user |
+| `remote_clipboard` | Optional boolean, default `false`: publish uploaded PNGs to the remote companion's private image clipboard; `remote setup` enables it after checking dependencies |
 
 The directory must be an absolute POSIX path. Supported characters are ASCII letters, digits, underscores, dots, slashes and hyphens. Spaces and `..` path components are rejected; `~`, `$HOME` and environment variables are not expanded. Use valid JSON with double quotes and no comments or trailing commas. Keep credentials in your SSH setup, outside this file.
 
@@ -56,7 +57,9 @@ clipbridge start
 
 Replace `dev-server` with your configured alias. `start` launches the native executable as a per-user background service and enables startup at login. You can close the command's terminal afterward; the matching SSH session must remain open for uploads.
 
-Copy an image, wait for the upload, then paste its remote path, such as `/home/example/.local/share/clipbridge/images/shot-UUID.png`. Notifications are attempted; their visibility depends on macOS notification settings. Images from **all applications** can trigger uploads.
+Copy an image and paste it into a local application as usual. The Mac clipboard remains unchanged before, during and after upload. Paths such as `/home/example/.local/share/clipbridge/images/shot-UUID.png` are storage locations shown in logs, not clipboard replacements. Notifications are attempted; their visibility depends on macOS notification settings. Images from **all applications** can trigger uploads.
+
+For image attachments in an SSH CLI, complete [remote setup](remote-images.md), reconnect SSH once to load the Bash/Zsh integration, then run `codex` or `claude` normally inside the SSH terminal. Arguments such as `codex resume` work as usual. For custom shells or existing alias/function conflicts, use the [manual launch](remote-images.md#manual-launch-and-custom-shells). Wait for **remote image clipboard ready** before image paste. The remote clipboard holds the last successfully published image; copying Mac text does not clear it.
 
 For a temporary foreground session with logs in the terminal, use `clipbridge run`. Stop it with Ctrl+C; queued uploads may delay exit. Foreground mode does not install a login service and cannot run alongside an existing monitor.
 
@@ -75,6 +78,12 @@ For a temporary foreground session with logs in the terminal, use `clipbridge ru
 | `clipbridge run` | Monitor in the foreground and log to the terminal |
 | `clipbridge doctor` | Check tools, configuration, legacy service conflicts, SSH authentication and existing destination permissions |
 | `clipbridge configure` | Run the optional setup wizard |
+| `clipbridge remote setup` | Use Cargo on both hosts to vendor on the Mac/build offline on Linux, check dependencies/backend compatibility, install remote Bash/Zsh integration and enable `remote_clipboard`; does not restart monitoring |
+| `clipbridge remote doctor` | Check the companion's Xvfb, xauth and xclip dependencies |
+| `clipbridge remote status` | Show the companion's running/image state |
+| `clipbridge remote stop` | Stop the remote private clipboard backend; a later upload or integrated CLI launch can start it again |
+
+`clipbridge remote setup --no-shell` keeps manual wrapper launches and skips shell installation. It does not remove previously installed integration.
 
 Repeating `start` does not interrupt a running background service or reload edits. After changing JSON, use `restart`; for foreground mode, stop and rerun it. A background restart may interrupt an active transfer and does not drain its upload queue.
 
@@ -95,7 +104,8 @@ Runtime commands accept `--config` before or after the subcommand. Installation 
 - Uploads require a same-user `ssh ALIAS` process with an established TCP socket. The alias must match the configured value. This is a heuristic, not proof of authentication; multiplexing, jump hosts, remote commands and IDE-managed connections are not guaranteed.
 - Images copied without a matching session are skipped and are not uploaded after reconnecting. Each queued job checks the session again before starting; jobs skipped after disconnect are not retained for later upload.
 - Captured images upload sequentially, with room for 16 pending uploads in addition to the active transfer. When full, the queue skips the newly captured image, removes that capture and logs the skip; already queued images remain. Polling can miss very rapid clipboard changes. Captures that become stale before extraction are skipped.
-- On success, the path replaces the clipboard only if its change count still matches. Newer contents are preserved on a best-effort basis: checking and replacing are not atomic. Find a successful upload's path in the log if it was not copied.
+- ClipBridge never writes to or clears the Mac clipboard. Local image paste and newer copied content remain untouched. Successful upload paths are available in logs.
+- With `remote_clipboard: true`, each completed transfer is published to the Linux companion before reporting remote readiness. A publication failure is reported separately from a transfer failure and retains the local copy. Until a later publication succeeds, the remote clipboard may still contain an older image. This is asynchronous image publication, not a full clipboard mirror.
 - Failed uploads retain a local copy when available and log the error. There is no automatic retry or cleanup. Successful uploads remove their staging copies. Remote files remain indefinitely; interrupted transfers can leave partial remote files.
 - Notifications run separately with room for 16 pending notifications. A full notification queue skips the new notification without blocking clipboard updates or changing the upload result; logs remain available.
 
@@ -103,7 +113,7 @@ Runtime commands accept `--config` before or after the subcommand. Installation 
 
 `clipbridge configure` lists literal aliases from `~/.ssh/config` and included files, then saves the same JSON configuration. Alias discovery supplies suggestions without evaluating `Match` rules; you can enter an alias manually. For a new target, accepting the directory default resolves `.local/share/clipbridge/images` under the **remote** user's home directory.
 
-The wizard checks SSH access, creates the directory if needed and creates/removes a temporary write probe before saving. It does not start monitoring. Failed checks preserve existing settings; a successful replacement of invalid JSON first saves a `config.json.backup-*` file. Wizard-created configuration files have owner-only permissions.
+The wizard checks SSH access, creates the directory if needed and creates/removes a temporary write probe before saving. It does not start monitoring. Failed checks preserve existing settings; a successful replacement of invalid JSON first saves a `config.json.backup-*` file. Wizard-created configuration files have owner-only permissions. Reconfiguration preserves remote clipboard enablement for the same SSH alias; changing the alias disables it until `remote setup` succeeds for that host.
 
 Scripted setup is also available:
 
@@ -127,6 +137,8 @@ clipbridge doctor
 ```
 
 Use your actual alias and absolute directory. For authentication errors, verify ordinary SSH access, host-key trust and key/agent availability. For missing uploads, check the exact alias, open session and logs. If a lifecycle command reports another operation in progress, wait for that command to finish before retrying.
+
+If local pastes still contain paths, confirm the active monitor is version 0.3 or newer and stop older uploaders, then copy the image again. Already replaced clipboard contents cannot be restored by an upgrade. For remote attachment failures, see [remote troubleshooting](remote-images.md#troubleshooting); ordinary `doctor` does not check the remote clipboard.
 
 ## Files and Cleanup
 

@@ -1,14 +1,16 @@
 # Installation, Upgrade and Removal
 
-Last updated: 2026-09-30.
+Last updated: 2026-10-03.
 
-ClipBridge 0.2 uses a native Rust executable. It installs into your user account without `sudo`, independently of the original checkout or extracted source package.
+ClipBridge 0.3.1 uses a native Rust executable. It installs into your user account without `sudo`, independently of the original checkout or extracted source package. Optional remote image paste uses a separately deployed Rust companion on the Linux/WSL host.
 
 ## Requirements
 
 Building, installing from source and upgrading from source require macOS, Rust 1.94+ with Cargo, and the linker/SDK supplied by Xcode or Apple Command Line Tools. Install missing Apple tools with `xcode-select --install`. Cargo may download the dependencies recorded in `Cargo.lock` on the first build.
 
 Normal installed operation does not need Python, Swift, Rust or Cargo. The executable calls macOS system tools, including SSH/SCP and launchctl, and accesses the clipboard through AppKit. A graphical login session is required for monitoring. The source installer builds for the current Mac; precompiled cross-machine release archives are not provided yet.
+
+Remote companion setup requires Rust 1.94+/Cargo on both the Mac and Linux host, plus a native linker on Linux. Cargo vendors locked dependencies on the Mac; the source and dependencies are uploaded together and built remotely with `--frozen`, without remote registry access. The Mac needs registry access or already cached dependencies. Normal operation needs no Rust toolchain on either host; the Linux companion requires Xvfb, xauth and xclip. Follow [remote image setup](remote-images.md); the Mac installer does not install remote system packages.
 
 ## Install
 
@@ -29,7 +31,7 @@ export PATH="$HOME/.local/bin:$PATH"
 clipbridge --version
 ```
 
-If needed, add that export to your shell startup file, such as `~/.zshrc`. The installer does not edit shell startup files. The absolute command `~/.local/bin/clipbridge` also works without a PATH change.
+If needed, add that export to your shell startup file, such as `~/.zshrc`. The Mac installer does not edit shell startup files. Remote `clipbridge remote setup` separately installs Bash/Zsh integration on the SSH host. The absolute command `~/.local/bin/clipbridge` also works without a PATH change.
 
 Fresh installation does not enable clipboard monitoring. After configuration, keep the matching interactive SSH session open and run:
 
@@ -41,7 +43,7 @@ If this source checkout or an existing managed installation already has a loaded
 
 ## Migrate from Python 0.1
 
-For the first upgrade from Python 0.1 to Rust 0.2, run the installer **from the new Rust source directory**:
+For the first upgrade from Python 0.1 to the current Rust version, run the installer **from the new Rust source directory**:
 
 ```sh
 ./install.sh
@@ -87,6 +89,12 @@ Upgrades are local and explicit. The command does not fetch code from GitHub or 
 
 The upgrade compiles the selected new source, then invokes that version's installer. It stages and checks the executable before stopping the existing service, switches the active release and restores a previously loaded monitor. Readiness requires monitor registration and acquisition of its upload lock; it does not verify an SSH transfer. A stopped service stays stopped. Active background transfers may be interrupted during replacement.
 
+Version 0.3 preserves Mac clipboard images instead of replacing them with remote paths. Existing JSON remains valid; remote publication defaults to disabled. Run `clipbridge remote setup` and then `clipbridge restart` when adopting remote image paste.
+
+Version 0.3.1 adds remote Bash/Zsh integration: after `remote setup`, reconnect SSH once and run `codex` or `claude` normally. Setup adds a managed startup block and preserves existing aliases/functions. Use `clipbridge remote setup --no-shell` to skip that integration; this flag does not remove an existing hook. See [shell integration](remote-images.md#start-the-remote-cli) for custom shells and removal.
+
+After upgrades that change the companion, rerun `remote setup`. If it detects an incompatible running backend, explicitly run `clipbridge remote stop`, repeat setup and relaunch remote CLIs. Companion deployment does not transparently replace a running backend and is separate from the Mac installer's versioned recovery process.
+
 If activation fails or is cancelled, the installer attempts to restore the old release, launcher and service state. Recovery failures are reported explicitly with preserved program files for inspection. The current and immediately preceding successful payloads are retained; older recognized payloads are cleaned up. There is no manual rollback command yet. These recovery checks are not a guarantee against power loss during installation.
 
 Configuration inside a source/program directory is copied to the user configuration directory before that active service is migrated. Existing files are not overwritten; a `migrated-*.json` filename is used if necessary. The installer prints the selected path. Custom configuration outside the source/program directory remains at its existing location; keep passing `--config` when it differs from the default.
@@ -98,6 +106,8 @@ clipbridge uninstall
 ```
 
 This stops the installation's background service, disables its login startup and removes its managed command and program payloads. It preserves user configuration, logs, retained local images, remote uploads and the original source checkout.
+
+Mac uninstallation does not remove or stop the remote companion. If it is in use, run `clipbridge remote stop` before uninstalling and follow [remote stop/removal](remote-images.md#stop-disable-and-remove) for separate cleanup.
 
 Stop a foreground monitor before uninstalling. An active configuration inside the program directory is copied outside it before removal. The uninstaller checks ownership and release inventories, refusing unfamiliar files or a modified launcher rather than deleting them.
 
@@ -119,6 +129,6 @@ From the repository root:
 make package
 ```
 
-The Rust packaging tool creates `dist/clipbridge-VERSION.tar.gz` and a matching `.sha256` checksum. The archive contains source, Cargo manifests/lockfile, installation wrappers, tests, documentation and the MIT license. It excludes personal configuration, caches, logs and generated binaries. Extraction produces a directory containing `install.sh`; installation builds the native executable locally.
+The Rust packaging tool creates `dist/clipbridge-VERSION.tar.gz` and a matching `.sha256` checksum. The archive contains both Rust crates, their manifests/lockfiles and tests, installation wrappers, documentation and the MIT license. It excludes personal configuration, caches, logs and generated binaries. Extraction produces a directory containing `install.sh`; installation builds the Mac executable locally. That executable embeds companion sources for `remote setup`, so remote setup does not require the original checkout.
 
 `VERSION` and the version in `Cargo.toml` must agree. `clipbridge --version` reports the compiled version. Checksums detect corruption; they are not signatures or proof of publisher identity. Building a source package does not publish a GitHub Release.

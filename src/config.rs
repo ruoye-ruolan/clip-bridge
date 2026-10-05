@@ -23,12 +23,19 @@ pub const SSH_OPTIONS: &[&str] = &[
 pub struct Config {
     pub ssh_host: String,
     pub remote_directory: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub remote_clipboard: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 impl Config {
     pub fn new(host: impl Into<String>, remote: impl Into<String>) -> Result<Self> {
         let mut config = Self {
             ssh_host: host.into(),
             remote_directory: remote.into(),
+            remote_clipboard: false,
         };
         config.validate()?;
         config.remote_directory = config.remote_directory.trim_end_matches('/').to_owned();
@@ -58,7 +65,9 @@ impl Config {
                 .with_context(|| format!("could not read configuration {}", path.display()))?,
         )
         .with_context(|| format!("invalid JSON configuration {}", path.display()))?;
-        Self::new(config.ssh_host, config.remote_directory)
+        let mut normalized = Self::new(config.ssh_host, config.remote_directory)?;
+        normalized.remote_clipboard = config.remote_clipboard;
+        Ok(normalized)
     }
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
@@ -309,9 +318,38 @@ mod tests {
         let bad = Config {
             ssh_host: "-bad".into(),
             remote_directory: "/tmp".into(),
+            remote_clipboard: false,
         };
         assert!(bad.save(&file).is_err());
         assert_eq!(Config::load(&file).unwrap(), config);
+    }
+    #[test]
+    fn remote_clipboard_is_opt_in_and_survives_normalized_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.json");
+        fs::write(
+            &file,
+            r#"{"ssh_host":"host","remote_directory":"/tmp/images/"}"#,
+        )
+        .unwrap();
+        let mut config = Config::load(&file).unwrap();
+        assert!(!config.remote_clipboard);
+        config.save(&file).unwrap();
+        assert!(
+            !fs::read_to_string(&file)
+                .unwrap()
+                .contains("remote_clipboard")
+        );
+        config.remote_clipboard = true;
+        config.save(&file).unwrap();
+        assert_eq!(Config::load(&file).unwrap(), config);
+        assert_eq!(config.remote_directory, "/tmp/images");
+        fs::write(
+            &file,
+            r#"{"ssh_host":"host","remote_directory":"/tmp/images","remote_clipboard":"true"}"#,
+        )
+        .unwrap();
+        assert!(Config::load(&file).is_err());
     }
     #[test]
     fn includes_are_hints_and_cycles_do_not_recurse_forever() {

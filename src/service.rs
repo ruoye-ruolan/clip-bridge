@@ -13,10 +13,17 @@ const LEGACY: &[&str] = &["local.codex.xnip-wsl", "local.clipbridge.prototype"];
 const LAUNCHCTL: &str = "/bin/launchctl";
 
 fn command(ctx: &Context, args: &[&str], cleanup: bool) -> Result<crate::common::CommandOutput> {
-    let mut spec = CommandSpec::new(LAUNCHCTL)
-        .args(args)
-        .timeout(20)
-        .unchecked();
+    command_with_timeout(ctx, args, cleanup, Duration::from_secs(20))
+}
+
+fn command_with_timeout(
+    ctx: &Context,
+    args: &[&str],
+    cleanup: bool,
+    timeout: Duration,
+) -> Result<crate::common::CommandOutput> {
+    let mut spec = CommandSpec::new(LAUNCHCTL).args(args).unchecked();
+    spec.timeout = timeout;
     if cleanup {
         spec = spec.uncancellable();
     }
@@ -42,7 +49,16 @@ fn details(output: &crate::common::CommandOutput) -> String {
 }
 
 fn info_for(ctx: &Context, label: &str, cleanup: bool) -> Result<Option<String>> {
-    let output = command(ctx, &["print", &target(ctx, label)], cleanup)?;
+    info_for_with_timeout(ctx, label, cleanup, Duration::from_secs(20))
+}
+
+fn info_for_with_timeout(
+    ctx: &Context,
+    label: &str,
+    cleanup: bool,
+    timeout: Duration,
+) -> Result<Option<String>> {
+    let output = command_with_timeout(ctx, &["print", &target(ctx, label)], cleanup, timeout)?;
     if output.code == 0 {
         return Ok(Some(output.stdout));
     }
@@ -385,11 +401,38 @@ fn context_snapshot(ctx: &Context) -> Result<Snapshot> {
 fn unload(ctx: &Context, cleanup: bool) -> Result<()> {
     if info_for(ctx, LABEL, cleanup)?.is_some() {
         let output = command(ctx, &["bootout", &target(ctx, LABEL)], cleanup)?;
-        if info_for(ctx, LABEL, cleanup)?.is_some() {
-            bail!("Could not stop ClipBridge: {}", details(&output));
+        if output.code != 0 {
+            if info_for(ctx, LABEL, cleanup)?.is_some() {
+                bail!("Could not stop ClipBridge: {}", details(&output));
+            }
+        } else {
+            // launchd may acknowledge bootout while the job is still terminating.
+            // Wait for its removal before replacing the executable or restoring a job.
+            wait_service_unloaded(ctx, cleanup, Duration::from_secs(20))?;
         }
     }
     Ok(())
+}
+
+fn wait_service_unloaded(ctx: &Context, cleanup: bool, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !cleanup && ctx.cancelled.load(Ordering::Relaxed) {
+            bail!("Operation cancelled");
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!(
+                "launchd accepted the stop request, but ClipBridge is still loaded after the shutdown timeout; retry once it finishes stopping"
+            );
+        }
+        if info_for_with_timeout(ctx, LABEL, cleanup, remaining)?.is_none() {
+            return Ok(());
+        }
+        std::thread::sleep(
+            Duration::from_millis(50).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
 }
 
 pub(crate) fn stop_unlocked(ctx: &Context, cleanup: bool) -> Result<()> {
@@ -570,12 +613,17 @@ pub(crate) mod test_support {
         pub jobs: BTreeMap<String, String>,
         pub definitions: BTreeMap<String, Vec<String>>,
         pub calls: Vec<Vec<String>>,
+        pub command_timeouts: Vec<Duration>,
         pub failures: BTreeMap<String, VecDeque<&'static str>>,
         pub cancel_bootstrap: bool,
         pub fail_readiness_once: bool,
         pub prints_until_failure: Option<u8>,
         pub ready: bool,
         pub watcher: Option<crate::common::FileLock>,
+        pub bootout_delay: u8,
+        pub pending_bootout: Option<u8>,
+        pub cancel_bootout: bool,
+        pub bootout_reported_failure: bool,
     }
 
     pub struct FakeRunner {
@@ -633,6 +681,7 @@ pub(crate) mod test_support {
             }
             let mut state = self.state.lock().unwrap();
             state.calls.push(args.clone());
+            state.command_timeouts.push(spec.timeout);
             if let Some(reason) = state
                 .failures
                 .get_mut(&args[0])
@@ -658,6 +707,18 @@ pub(crate) mod test_support {
                         }
                     }
                     let label = args[1].rsplit('/').next().unwrap();
+                    if label == LABEL {
+                        match state.pending_bootout {
+                            Some(0) => {
+                                state.pending_bootout = None;
+                                state.jobs.remove(LABEL);
+                                state.definitions.remove(LABEL);
+                                state.watcher = None;
+                            }
+                            Some(remaining) => state.pending_bootout = Some(remaining - 1),
+                            None => (),
+                        }
+                    }
                     match state.jobs.get(label) {
                         Some(info) => Ok(CommandOutput {
                             stdout: state
@@ -712,9 +773,24 @@ pub(crate) mod test_support {
                     Ok(CommandOutput::default())
                 }
                 "bootout" => {
-                    state.jobs.remove(LABEL);
-                    state.definitions.remove(LABEL);
-                    state.watcher = None;
+                    if state.bootout_delay > 0 {
+                        state.pending_bootout = Some(state.bootout_delay);
+                    } else {
+                        state.jobs.remove(LABEL);
+                        state.definitions.remove(LABEL);
+                        state.watcher = None;
+                    }
+                    if state.cancel_bootout {
+                        state.cancel_bootout = false;
+                        cancelled.store(true, Ordering::SeqCst);
+                    }
+                    if state.bootout_reported_failure {
+                        return Ok(CommandOutput {
+                            code: 3,
+                            stderr: "job already removed".into(),
+                            ..Default::default()
+                        });
+                    }
                     Ok(CommandOutput::default())
                 }
                 "kickstart" => {
@@ -1039,6 +1115,112 @@ mod tests {
                 .to_string()
                 .contains("permission denied")
         );
+        assert!(fixture.ctx.plist_path().exists());
+    }
+
+    #[test]
+    fn stop_waits_for_async_bootout_without_repeating_the_stop_command() {
+        let fixture = Fixture::new();
+        fixture.load_service();
+        fixture.runner.state.lock().unwrap().bootout_delay = 2;
+        stop(&fixture.ctx).unwrap();
+        assert_eq!(fixture.runner.action_count("bootout"), 1);
+        assert!(!fixture.ctx.plist_path().exists());
+        assert!(
+            !fixture
+                .runner
+                .state
+                .lock()
+                .unwrap()
+                .jobs
+                .contains_key(LABEL)
+        );
+    }
+
+    #[test]
+    fn successful_bootout_can_be_cancelled_while_cleanup_still_waits_for_removal() {
+        let fixture = Fixture::new();
+        fixture.load_service();
+        {
+            let mut state = fixture.runner.state.lock().unwrap();
+            state.bootout_delay = 2;
+            state.cancel_bootout = true;
+        }
+        let error = stop_unlocked(&fixture.ctx, false).unwrap_err();
+        assert!(error.to_string().to_lowercase().contains("cancelled"));
+        assert!(fixture.ctx.plist_path().exists());
+        assert!(fixture.ctx.cancelled.load(Ordering::Relaxed));
+        stop_unlocked(&fixture.ctx, true).unwrap();
+        assert!(!fixture.ctx.plist_path().exists());
+        assert!(
+            !fixture
+                .runner
+                .state
+                .lock()
+                .unwrap()
+                .jobs
+                .contains_key(LABEL)
+        );
+        assert_eq!(fixture.runner.action_count("bootout"), 2);
+    }
+
+    #[test]
+    fn failed_bootout_does_not_retry_when_service_remains_loaded() {
+        let fixture = Fixture::new();
+        fixture.load_service();
+        fixture.runner.fail_once("bootout", "permission denied");
+        let error = unload(&fixture.ctx, false).unwrap_err();
+        assert!(error.to_string().contains("permission denied"));
+        assert_eq!(fixture.runner.action_count("bootout"), 1);
+        assert_eq!(fixture.runner.action_count("print"), 2);
+        assert!(fixture.ctx.plist_path().exists());
+    }
+
+    #[test]
+    fn failed_bootout_is_harmless_if_service_was_already_removed() {
+        let fixture = Fixture::new();
+        fixture.load_service();
+        fixture
+            .runner
+            .state
+            .lock()
+            .unwrap()
+            .bootout_reported_failure = true;
+        stop_unlocked(&fixture.ctx, false).unwrap();
+        assert_eq!(fixture.runner.action_count("bootout"), 1);
+        assert!(!fixture.ctx.plist_path().exists());
+    }
+
+    #[test]
+    fn shutdown_polling_is_bounded_and_preserves_login_plist_on_timeout() {
+        let fixture = Fixture::new();
+        fixture.load_service();
+        let timeout = Duration::from_millis(20);
+        let error = wait_service_unloaded(&fixture.ctx, false, timeout).unwrap_err();
+        assert!(error.to_string().contains("shutdown timeout"));
+        assert!(fixture.ctx.plist_path().exists());
+        assert_eq!(fixture.runner.action_count("bootout"), 0);
+        assert!(
+            fixture
+                .runner
+                .state
+                .lock()
+                .unwrap()
+                .command_timeouts
+                .iter()
+                .all(|duration| *duration <= timeout)
+        );
+    }
+
+    #[test]
+    fn shutdown_polling_propagates_inspection_errors_without_retrying() {
+        let fixture = Fixture::new();
+        fixture.load_service();
+        fixture.runner.fail_once("print", "inspection denied");
+        let error =
+            wait_service_unloaded(&fixture.ctx, false, Duration::from_secs(20)).unwrap_err();
+        assert!(error.to_string().contains("inspection denied"));
+        assert_eq!(fixture.runner.action_count("print"), 1);
         assert!(fixture.ctx.plist_path().exists());
     }
 

@@ -26,6 +26,7 @@ pub struct CommandSpec {
     pub check: bool,
     pub cancellable: bool,
     pub cooperative_cancel: bool,
+    pub cwd: Option<PathBuf>,
 }
 impl CommandSpec {
     pub fn new(program: impl AsRef<OsStr>) -> Self {
@@ -36,6 +37,7 @@ impl CommandSpec {
             check: true,
             cancellable: true,
             cooperative_cancel: false,
+            cwd: None,
         }
     }
     pub fn args<I, S>(mut self, args: I) -> Self
@@ -49,6 +51,10 @@ impl CommandSpec {
     }
     pub fn timeout(mut self, seconds: u64) -> Self {
         self.timeout = Duration::from_secs(seconds);
+        self
+    }
+    pub fn current_dir(mut self, directory: impl AsRef<Path>) -> Self {
+        self.cwd = Some(directory.as_ref().to_owned());
         self
     }
     pub fn cooperative(mut self) -> Self {
@@ -94,12 +100,17 @@ fn terminate_and_reap(child: &mut std::process::Child, group: nix::unistd::Pid) 
 
 impl Runner for SystemRunner {
     fn run(&self, spec: &CommandSpec, cancelled: &AtomicBool) -> Result<CommandOutput> {
-        let mut child = Command::new(&spec.program)
+        let mut command = Command::new(&spec.program);
+        command
             .args(&spec.args)
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(directory) = &spec.cwd {
+            command.current_dir(directory);
+        }
+        let mut child = command
             .spawn()
             .with_context(|| format!("could not run {}", spec.program.display()))?;
         let group = nix::unistd::Pid::from_raw(
