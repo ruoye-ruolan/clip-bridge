@@ -17,14 +17,28 @@ const RUST_FILES: &[&str] = &[
     "src/service.rs",
     "src/installer.rs",
     "src/remote.rs",
+    "src/release.rs",
+    "src/setup.rs",
     "src/transport.rs",
     "src/bin/package.rs",
     "tests/cli.rs",
     "tests/installation.rs",
+    "tests/distribution.rs",
     "remote/src/main.rs",
     "remote/src/shell.rs",
     "remote/tests/cli.rs",
     "remote/tests/shell.rs",
+];
+
+const DISTRIBUTION_FILES: &[&str] = &[
+    "install-release.sh",
+    "scripts/package-native.sh",
+    ".github/workflows/release.yml",
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "skills/setup/SKILL.md",
+    "skills/status/SKILL.md",
+    "skills/doctor/SKILL.md",
 ];
 
 fn source_root() -> Result<PathBuf> {
@@ -86,6 +100,7 @@ fn package(root: &Path) -> Result<PathBuf> {
     .map(PathBuf::from)
     .collect();
     files.extend(RUST_FILES.iter().map(PathBuf::from));
+    files.extend(DISTRIBUTION_FILES.iter().map(PathBuf::from));
     collect(root, Path::new("docs"), "md", &mut files)?;
     let dist = root.join("dist");
     fs::create_dir_all(&dist)?;
@@ -107,7 +122,15 @@ fn package(root: &Path) -> Result<PathBuf> {
         header.set_gid(0);
         header.set_mtime(0);
         header.set_mode(
-            if matches!(relative.to_str(), Some("clipbridge" | "install.sh")) {
+            if matches!(
+                relative.to_str(),
+                Some(
+                    "clipbridge"
+                        | "install.sh"
+                        | "install-release.sh"
+                        | "scripts/package-native.sh"
+                )
+            ) {
                 0o755
             } else {
                 0o644
@@ -162,7 +185,12 @@ mod tests {
             fs::write(path, b"fixture").unwrap();
         }
         fs::write(dir.path().join("VERSION"), env!("CARGO_PKG_VERSION")).unwrap();
-        for name in RUST_FILES.iter().copied().chain(["docs/usage.md"]) {
+        for name in RUST_FILES
+            .iter()
+            .copied()
+            .chain(DISTRIBUTION_FILES.iter().copied())
+            .chain(["docs/usage.md"])
+        {
             let path = dir.path().join(name);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"fixture").unwrap();

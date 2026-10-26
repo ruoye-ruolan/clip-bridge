@@ -9,16 +9,60 @@ See the [project overview](../README.md), [development guide](../src/README.md) 
 ## Requirements
 
 - macOS with a logged-in graphical user session.
-- The installed Rust executable; no Python, Swift or Rust toolchain is needed for normal operation.
+- The installed native Mac executable; native installation and default setup need no Rust or Cargo.
 - Source installation/upgrades need Rust 1.94+, Cargo and Apple's linker/SDK from Xcode or Command Line Tools. See [installation](installation.md) for the first upgrade from Python 0.1.
-- A Linux or WSL host with a literal SSH alias in `~/.ssh/config`.
+- An x86_64 or aarch64 Linux server or WSL2 host with an SSH alias in `~/.ssh/config` and the [remote utilities](remote-images.md#prepare-the-linux-host). Other architectures require an explicit supported source build.
 - Noninteractive SSH authentication and a verified host key. ClipBridge cannot prompt for passwords or accept unknown host keys automatically.
 
 First connect normally with `ssh YOUR_ALIAS` to verify the server identity and authentication. A key or SSH agent must also work for the background process. Stop any legacy clipboard uploader before starting ClipBridge; see [migration](#migration).
 
+## One-Time Setup
+
+Run on the source Mac after [installation](installation.md):
+
+```sh
+clipbridge setup
+```
+
+The wizard lists SSH aliases, asks for the destination and image directory, and lets you choose background monitoring and login startup. It uses the remote account's `.local/share/clipbridge/images` by default; an existing directory is retained when reconfiguring the same host.
+
+For a script or plugin, provide the host and an explicit startup choice:
+
+```sh
+clipbridge setup --host dev-server --start
+# Configure both hosts, but leave monitoring stopped:
+clipbridge setup --host dev-server --no-start
+```
+
+`--start` enables background monitoring and login startup. **`--no-start` stops an existing managed background service and disables its login startup.** It does not merely skip starting a new instance. Stop any foreground monitor with Ctrl+C before setup.
+
+| Option | Effect |
+| --- | --- |
+| `--host ALIAS` | Select the verified SSH alias |
+| `--remote-dir /absolute/path` | Override the remote-home default |
+| `--start` / `--no-start` | Choose monitoring and login-startup behavior |
+| `--no-shell` | Skip adding Bash/Zsh wrappers; retain any existing hooks |
+| `--assets-dir /local/directory` | Use matching verified companion assets already on the Mac |
+| `--build-from-source` | Vendor dependencies on the Mac and compile the companion offline on Linux |
+
+`--assets-dir` and `--build-from-source` cannot be combined. In noninteractive use, `--host` and one startup choice are required. Use global `--config` for another JSON path.
+
+Default setup downloads the Linux companion for the remote architecture from the Mac toolkit's exact published release, verifies its SHA-256 digest and uploads it over SSH. Ordinary Linux servers and WSL2 follow the same flow; the remote host needs no Cargo or GitHub connection. Missing system tools are reported for manual administrator installation. For development builds or restricted download access, use trusted local assets or the explicit source-build option.
+
+Setup keeps the existing local configuration and service while checking/deploying the remote component. It commits the new JSON only after remote setup succeeds, then applies the startup choice. If local activation fails, it attempts to restore the previous configuration and service. The remote helper may remain installed after a later local failure; recovery errors are reported. Concurrent configuration edits are preserved. Unknown JSON fields and alternative aliases are retained for the same primary host; changing the primary clears its alternatives.
+
+To inspect candidate aliases without connecting:
+
+```sh
+clipbridge hosts
+clipbridge hosts --json
+```
+
+The JSON contains `aliases` and `configured_host`. Discovery reads local SSH configuration and includes; it does not test connectivity or evaluate all `Match` behavior.
+
 ## Configure the Destination
 
-Installation preserves your existing configuration or creates a sample at `~/.config/clipbridge/config.json`.
+Setup writes `~/.config/clipbridge/config.json`. You can also edit that file directly; installation preserves it or creates a sample when absent.
 
 Edit `~/.config/clipbridge/config.json` in your preferred editor:
 
@@ -83,7 +127,7 @@ Copy an image and paste it into a local application as usual. The Mac clipboard 
 
 For image attachments in an SSH CLI, complete [remote setup](remote-images.md), reconnect SSH once to load the Bash/Zsh integration, then run `codex`, `claude` or `opencode` normally inside the SSH terminal. Arguments such as `codex resume` work as usual. For custom shells or existing alias/function conflicts, use the [manual launch](remote-images.md#manual-launch-and-custom-shells). Wait for **remote image clipboard ready** before image paste. The remote clipboard holds the last successfully published image; copying Mac text does not clear it.
 
-OpenCode integration is included in Mac 0.3.4 with companion 0.3.2. Existing installations need `clipbridge remote setup` after the Mac upgrade, then a new SSH shell or a reload of the managed snippet. OpenCode processes started without the wrapper must be relaunched. See the [upgrade instructions](installation.md#upgrade-a-rust-installation).
+OpenCode integration is included in companion 0.3.2. After adopting it through `setup` or `remote setup`, open a new SSH shell or reload the managed snippet. OpenCode processes started without the wrapper must be relaunched. See the [upgrade instructions](installation.md#upgrade-a-rust-installation).
 
 For a temporary foreground session with logs in the terminal, use `clipbridge run`. Stop it with Ctrl+C; queued uploads may delay exit. Foreground mode does not install a login service and cannot run alongside an existing monitor.
 
@@ -101,8 +145,10 @@ For a temporary foreground session with logs in the terminal, use `clipbridge ru
 | `clipbridge logs --follow` | Follow background logs; use `--lines NUMBER` to change the initial count |
 | `clipbridge run` | Monitor in the foreground and log to the terminal |
 | `clipbridge doctor` | Check tools, configuration, legacy service conflicts, SSH authentication and existing destination permissions |
-| `clipbridge configure` | Run the optional setup wizard |
-| `clipbridge remote setup` | Use Cargo on both hosts to vendor on the Mac/build offline on Linux, check dependencies/backend compatibility, install remote Bash/Zsh integration and enable `remote_clipboard`; does not restart monitoring |
+| `clipbridge setup` | Configure both hosts and apply an explicit monitoring/login-startup choice |
+| `clipbridge hosts --json` | List local SSH alias suggestions without connecting |
+| `clipbridge configure` | Edit only the destination configuration through the optional wizard |
+| `clipbridge remote setup` | Deploy the prebuilt companion to the existing destination, install shell integration and enable publication; does not reload monitoring |
 | `clipbridge remote doctor` | Check the companion's Xvfb, xauth and xclip dependencies |
 | `clipbridge remote status` | Show the companion's running/image state |
 | `clipbridge remote stop` | Stop the remote private clipboard backend; a later upload or integrated CLI launch can start it again |
@@ -145,9 +191,9 @@ Logs include `capture-to-completion N ms`, covering alias selection, image conve
 
 After switching networks, close stale SSH sessions and reconnect through a working configured alias. If a new image reports a transport failure, inspect the log before copying it again. The cached upload connection does not make a broken network route usable.
 
-## Optional Setup Wizard
+## Destination-Only Wizard
 
-`clipbridge configure` lists literal aliases from `~/.ssh/config` and included files, then saves the same JSON configuration. Alias discovery supplies suggestions without evaluating `Match` rules; you can enter an alias manually. For a new target, accepting the directory default resolves `.local/share/clipbridge/images` under the **remote** user's home directory.
+For the complete local/remote flow, use `clipbridge setup`. To change only the destination configuration, `clipbridge configure` lists literal aliases from `~/.ssh/config` and included files, then saves the same JSON configuration. Alias discovery supplies suggestions without evaluating `Match` rules; you can enter an alias manually. For a new target, accepting the directory default resolves `.local/share/clipbridge/images` under the **remote** user's home directory.
 
 The wizard checks SSH access, creates the directory if needed and creates/removes a temporary write probe before saving. It does not start monitoring. Failed checks preserve existing settings; a successful replacement of invalid JSON first saves a `config.json.backup-*` file. Wizard-created configuration files have owner-only permissions. Reconfiguration preserves `ssh_aliases` and remote clipboard enablement when `ssh_host` stays the same. Changing `ssh_host` clears the alternative aliases and disables remote publication until `remote setup` succeeds for that host. Edit `ssh_aliases` directly in JSON; the wizard does not manage that list.
 

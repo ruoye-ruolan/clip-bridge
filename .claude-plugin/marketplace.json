@@ -1,0 +1,12 @@
+{
+  "name": "clipbridge",
+  "description": "Install and configure ClipBridge image sync from macOS to Linux and WSL2.",
+  "owner": { "name": "ruoye-ruolan" },
+  "plugins": [
+    {
+      "name": "clipbridge",
+      "source": "./",
+      "description": "Set up clipboard image sync from a Mac to Linux servers or WSL over SSH."
+    }
+  ]
+}

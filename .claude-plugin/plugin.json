@@ -1,0 +1,10 @@
+{
+  "name": "clipbridge",
+  "version": "0.4.0",
+  "description": "Guided Mac-to-Linux image clipboard setup, status and troubleshooting, including WSL2.",
+  "author": { "name": "ruoye-ruolan" },
+  "homepage": "https://github.com/ruoye-ruolan/clip-bridge",
+  "repository": "https://github.com/ruoye-ruolan/clip-bridge",
+  "license": "MIT",
+  "keywords": ["clipboard", "ssh", "macos", "linux", "wsl", "opencode"]
+}

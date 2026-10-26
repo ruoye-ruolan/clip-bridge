@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use clipbridge::{
     common::{self, CommandSpec, Context},
     config::{self, Config},
-    monitor, remote, service,
+    monitor, release, remote, service, setup,
 };
 use std::collections::VecDeque;
 use std::fs::{self, File};
@@ -30,7 +30,7 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
-    #[command(about = "Install this compiled version from a trusted source tree")]
+    #[command(about = "Install this compiled version from a trusted source or native bundle")]
     Install {
         #[arg(long)]
         prefix: Option<PathBuf>,
@@ -39,7 +39,7 @@ enum Action {
         #[arg(long, hide = true)]
         require_existing: bool,
     },
-    #[command(about = "Build and install a newer trusted source checkout")]
+    #[command(about = "Install an extracted native bundle or build a trusted source checkout")]
     Upgrade {
         #[arg(long = "from")]
         source: PathBuf,
@@ -59,6 +59,42 @@ enum Action {
         remote_dir: Option<String>,
         #[arg(long)]
         no_check: bool,
+    },
+    #[command(about = "List SSH aliases from local configuration without connecting")]
+    Hosts {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Configure this Mac and a Linux/WSL host in one guided flow")]
+    Setup {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        remote_dir: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "no_start",
+            help = "Start monitoring and enable login startup"
+        )]
+        start: bool,
+        #[arg(
+            long,
+            help = "Leave monitoring stopped and disable existing managed login startup"
+        )]
+        no_start: bool,
+        #[arg(long)]
+        no_shell: bool,
+        #[arg(
+            long,
+            help = "Explicitly build the remote companion from source instead of downloading it"
+        )]
+        build_from_source: bool,
+        #[arg(
+            long,
+            conflicts_with = "build_from_source",
+            help = "Use verified release assets from a local directory"
+        )]
+        assets_dir: Option<PathBuf>,
     },
     #[command(about = "Check tools, SSH access and existing destination permissions")]
     Doctor,
@@ -99,6 +135,17 @@ enum RemoteAction {
             help = "Keep manual wrapper startup instead of installing shell integration"
         )]
         no_shell: bool,
+        #[arg(
+            long,
+            help = "Vendor locally and compile offline on the remote Linux host"
+        )]
+        build_from_source: bool,
+        #[arg(
+            long,
+            conflicts_with = "build_from_source",
+            help = "Use verified release assets from a local directory"
+        )]
+        assets_dir: Option<PathBuf>,
     },
     #[command(about = "Check remote image clipboard support")]
     Doctor,
@@ -135,6 +182,132 @@ fn prompt(ctx: &Context, message: &str) -> Result<String> {
         }
     }
 }
+
+fn choose_host(ctx: &Context, previous: Option<&Config>) -> Result<String> {
+    let aliases = config::discover_ssh_aliases(&ctx.home.join(".ssh/config"), &ctx.home);
+    for (index, alias) in aliases.iter().enumerate() {
+        println!("  {}. {alias}", index + 1);
+    }
+    let default = previous
+        .map(|config| config.ssh_host.as_str())
+        .or_else(|| (aliases.len() == 1).then(|| aliases[0].as_str()))
+        .unwrap_or("");
+    loop {
+        let input = prompt(ctx, &format!("SSH alias (name or number) [{default}]: "))?;
+        let mut host = if input.is_empty() {
+            default.to_owned()
+        } else {
+            input
+        };
+        if let Ok(index) = host.parse::<usize>()
+            && index > 0
+            && index <= aliases.len()
+        {
+            host = aliases[index - 1].clone();
+        }
+        match config::validate_host(&host) {
+            Ok(()) => return Ok(host),
+            Err(error) => println!("{error}"),
+        }
+    }
+}
+
+struct SetupInput {
+    host: Option<String>,
+    remote_dir: Option<String>,
+    start: bool,
+    no_start: bool,
+    no_shell: bool,
+    build_from_source: bool,
+    assets_dir: Option<PathBuf>,
+}
+
+fn guided_setup(ctx: &Context, path: &Path, input: SetupInput) -> Result<()> {
+    let wizard = input.host.is_none() || !(input.start || input.no_start);
+    if wizard && !io::stdin().is_terminal() {
+        bail!("setup requires a terminal, or --host ALIAS and either --start or --no-start");
+    }
+    let previous = if path.exists() {
+        Some(Config::load(path)?)
+    } else {
+        None
+    };
+    let host = match input.host {
+        Some(host) => {
+            config::validate_host(&host)?;
+            host
+        }
+        None => choose_host(
+            ctx,
+            previous
+                .as_ref()
+                .filter(|old| !setup::is_initial_example(old)),
+        )?,
+    };
+    let mut directory = input.remote_dir.or_else(|| {
+        previous
+            .as_ref()
+            .filter(|old| old.ssh_host == host && !setup::is_initial_example(old))
+            .map(|old| old.remote_directory.clone())
+    });
+    if wizard {
+        let default = directory
+            .as_deref()
+            .unwrap_or("remote home/.local/share/clipbridge/images");
+        let answer = prompt(ctx, &format!("Remote image directory [{default}]: "))?;
+        if !answer.is_empty() {
+            directory = Some(answer);
+        }
+    }
+    let start = if input.start || input.no_start {
+        input.start
+    } else {
+        loop {
+            match prompt(ctx, "Start monitoring and enable login startup? [Y/n]: ")?
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "" | "y" | "yes" => break true,
+                "n" | "no" => break false,
+                _ => println!("Enter yes or no."),
+            }
+        }
+    };
+    let options = setup::SetupOptions {
+        host,
+        remote_directory: directory,
+        start,
+        integrate_shell: !input.no_shell,
+        build_from_source: input.build_from_source,
+        assets_dir: input
+            .assets_dir
+            .map(|path| common::expand_path(&path, &ctx.home)),
+    };
+    println!("{}", setup::execute(ctx, path, options)?);
+    Ok(())
+}
+
+fn hosts(ctx: &Context, path: &Path, json: bool) -> Result<()> {
+    let aliases = config::discover_ssh_aliases(&ctx.home.join(".ssh/config"), &ctx.home);
+    if json {
+        let configured = Config::load(path)
+            .ok()
+            .filter(|config| !setup::is_initial_example(config))
+            .map(|config| config.ssh_host);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({"aliases": aliases, "configured_host": configured})
+            )?
+        );
+    } else {
+        for alias in aliases {
+            println!("{alias}");
+        }
+    }
+    Ok(())
+}
+
 fn configure(
     ctx: &Context,
     explicit: Option<&Path>,
@@ -175,33 +348,7 @@ fn configure(
         config::validate_host(&host)?;
         host
     } else {
-        let aliases = config::discover_ssh_aliases(&ctx.home.join(".ssh/config"), &ctx.home);
-        for (i, alias) in aliases.iter().enumerate() {
-            println!("  {}. {alias}", i + 1);
-        }
-        let default = previous
-            .as_ref()
-            .map(|c| c.ssh_host.as_str())
-            .or_else(|| (aliases.len() == 1).then(|| aliases[0].as_str()))
-            .unwrap_or("");
-        loop {
-            let input = prompt(ctx, &format!("SSH alias (name or number) [{default}]: "))?;
-            let mut chosen = if input.is_empty() {
-                default.to_owned()
-            } else {
-                input
-            };
-            if let Ok(index) = chosen.parse::<usize>()
-                && index > 0
-                && index <= aliases.len()
-            {
-                chosen = aliases[index - 1].clone();
-            }
-            match config::validate_host(&chosen) {
-                Ok(()) => break chosen,
-                Err(error) => println!("{error}"),
-            }
-        }
+        choose_host(ctx, previous.as_ref())?
     };
     let mut directory = directory.or_else(|| {
         previous
@@ -357,7 +504,7 @@ fn upgrade(ctx: &Context, source: &Path, prefix: Option<&Path>) -> Result<()> {
         .canonicalize()
         .context("upgrade source directory is missing")?;
     if !source.join("Cargo.toml").is_file() {
-        bail!("--from must name an extracted Rust source directory");
+        bail!("--from must name an extracted native bundle or Rust source directory");
     }
     let prefix = match prefix {
         Some(prefix) => common::absolute(&common::expand_path(prefix, &ctx.home))?,
@@ -372,20 +519,27 @@ fn upgrade(ctx: &Context, source: &Path, prefix: Option<&Path>) -> Result<()> {
     {
         bail!("ClipBridge is not installed at this prefix; use install.sh first");
     }
-    println!("Building the selected source before upgrading...");
-    ctx.exec(
-        CommandSpec::new("cargo")
-            .args(["build", "--release", "--locked", "--manifest-path"])
-            .args([source.join("Cargo.toml").as_os_str()])
-            .args(["--target-dir"])
-            .args([source.join("target").as_os_str()])
-            .timeout(600),
-    )?;
+    let binary = if source.join("bundle.json").exists() {
+        release::validate_native_bundle(&source)?;
+        println!("Installing the verified native bundle; no compiler is needed...");
+        source.join("clipbridge")
+    } else {
+        println!("Building the selected source before upgrading...");
+        ctx.exec(
+            CommandSpec::new("cargo")
+                .args(["build", "--release", "--locked", "--manifest-path"])
+                .args([source.join("Cargo.toml").as_os_str()])
+                .args(["--target-dir"])
+                .args([source.join("target").as_os_str()])
+                .timeout(600),
+        )?;
+        source.join("target/release/clipbridge")
+    };
     if ctx.cancelled.load(Ordering::SeqCst) {
         bail!("upgrade cancelled before installation");
     }
     let output = ctx.exec(
-        CommandSpec::new(source.join("target/release/clipbridge"))
+        CommandSpec::new(binary)
             .args(["install", "--source"])
             .args([source.as_os_str()])
             .args(["--prefix"])
@@ -408,6 +562,9 @@ fn execute(cli: Cli, ctx: &Context) -> Result<()> {
             let source = source
                 .or_else(|| ctx.source.clone())
                 .context("install from a trusted source directory using ./install.sh")?;
+            if source.join("bundle.json").exists() {
+                release::validate_native_bundle(&source)?;
+            }
             println!(
                 "{}",
                 clipbridge::installer::install(ctx, &source, prefix.as_deref(), require_existing)?
@@ -423,12 +580,52 @@ fn execute(cli: Cli, ctx: &Context) -> Result<()> {
             remote_dir,
             no_check,
         } => configure(ctx, cli.config.as_deref(), host, remote_dir, no_check)?,
+        Action::Hosts { json } => hosts(ctx, &path, json)?,
+        Action::Setup {
+            host,
+            remote_dir,
+            start,
+            no_start,
+            no_shell,
+            build_from_source,
+            assets_dir,
+        } => {
+            guided_setup(
+                ctx,
+                &path,
+                SetupInput {
+                    host,
+                    remote_dir,
+                    start,
+                    no_start,
+                    no_shell,
+                    build_from_source,
+                    assets_dir,
+                },
+            )?;
+        }
         Action::Doctor => doctor(ctx, &path)?,
         Action::Remote { command } => println!(
             "{}",
             match command {
-                RemoteAction::Setup { no_shell } =>
-                    remote::setup_with_shell(ctx, &path, !no_shell)?,
+                RemoteAction::Setup {
+                    no_shell,
+                    build_from_source,
+                    assets_dir,
+                } => remote::setup_with_options(
+                    ctx,
+                    &path,
+                    !no_shell,
+                    if build_from_source {
+                        remote::SetupMode::BuildFromSource
+                    } else {
+                        remote::SetupMode::Prebuilt
+                    },
+                    assets_dir
+                        .as_ref()
+                        .map(|path| common::expand_path(path, &ctx.home))
+                        .as_deref()
+                )?,
                 RemoteAction::Doctor => remote::doctor(ctx, &path)?,
                 RemoteAction::Status => remote::status(ctx, &path)?,
                 RemoteAction::Stop => remote::stop(ctx, &path)?,
@@ -550,8 +747,108 @@ mod tests {
                 .unwrap()
                 .command,
             Action::Remote {
-                command: RemoteAction::Setup { no_shell: true }
+                command: RemoteAction::Setup { no_shell: true, .. }
             }
         ));
+    }
+
+    #[test]
+    fn setup_parser_requires_unambiguous_startup_and_distribution_options() {
+        for command in [
+            vec!["clipbridge", "setup"],
+            vec!["clipbridge", "remote", "setup"],
+        ] {
+            let mut conflicting = command.clone();
+            conflicting.extend(["--build-from-source", "--assets-dir", "/tmp/assets"]);
+            assert!(Cli::try_parse_from(conflicting).is_err());
+            let mut native = command;
+            native.extend(["--assets-dir", "/tmp/assets"]);
+            assert!(Cli::try_parse_from(native).is_ok());
+        }
+        assert!(
+            Cli::try_parse_from([
+                "clipbridge",
+                "setup",
+                "--host",
+                "linux-prod",
+                "--start",
+                "--no-start"
+            ])
+            .is_err()
+        );
+        for option in ["--start", "--no-start"] {
+            assert!(
+                Cli::try_parse_from(["clipbridge", "setup", "--host", "linux-prod", option])
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn native_upgrade_runs_the_candidate_installer_without_building_source() {
+        use sha2::{Digest, Sha256};
+        use std::sync::Mutex;
+        #[derive(Default)]
+        struct NativeInstaller(Mutex<Vec<CommandSpec>>);
+        impl Runner for NativeInstaller {
+            fn run(&self, spec: &CommandSpec, _: &AtomicBool) -> Result<CommandOutput> {
+                self.0.lock().unwrap().push(spec.clone());
+                Ok(CommandOutput::default())
+            }
+        }
+        let home = tempfile::tempdir().unwrap();
+        let bundle = home.path().join("native bundle");
+        fs::create_dir_all(bundle.join("src")).unwrap();
+        for name in [
+            "Cargo.toml",
+            "Cargo.lock",
+            "VERSION",
+            "LICENSE",
+            "src/config.example.json",
+        ] {
+            fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(name),
+                bundle.join(name),
+            )
+            .unwrap();
+        }
+        let executable = bundle.join("clipbridge");
+        fs::write(&executable, b"candidate native executable").unwrap();
+        fs::write(
+            bundle.join("bundle.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "product": "clipbridge", "schema": 1, "version": env!("CARGO_PKG_VERSION"),
+                "target": format!("{}-apple-darwin", std::env::consts::ARCH),
+                "binary_sha256": format!("{:x}", Sha256::digest(fs::read(&executable).unwrap()))
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let prefix = home.path().join("installed prefix");
+        fs::create_dir_all(prefix.join("share/clipbridge")).unwrap();
+        fs::write(
+            prefix.join("share/clipbridge/.clipbridge-install.json"),
+            b"{}",
+        )
+        .unwrap();
+        let runner = Arc::new(NativeInstaller::default());
+        let ctx = Context {
+            home: home.path().to_owned(),
+            executable: home.path().join("old-clipbridge"),
+            source: None,
+            uid: 501,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            runner: runner.clone(),
+        };
+        upgrade(&ctx, &bundle, Some(&prefix)).unwrap();
+        let calls = runner.0.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].program,
+            bundle.canonicalize().unwrap().join("clipbridge")
+        );
+        assert_eq!(calls[0].args[0], "install");
+        assert!(calls[0].args.iter().any(|arg| arg == "--require-existing"));
+        assert!(!calls[0].args.iter().any(|arg| arg == "build"));
     }
 }

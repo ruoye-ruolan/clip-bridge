@@ -1,0 +1,109 @@
+name: Build native releases
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            platform: macos
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            platform: linux
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            platform: linux
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      TARGET: ${{ matrix.target }}
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check tag version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.94.0
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - name: Install Linux build tools
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools zsh
+      - name: Check and build Mac application
+        if: matrix.platform == 'macos'
+        run: |
+          make check
+          make test
+          cargo build --release --locked --bin clipbridge --target "$TARGET"
+          "target/$TARGET/release/clipbridge" --version
+          scripts/package-native.sh --target "$TARGET" --binary "target/$TARGET/release/clipbridge"
+      - name: Build source archive
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: make package
+      - name: Check and build Linux companion
+        if: matrix.platform == 'linux'
+        run: |
+          cargo fmt --manifest-path remote/Cargo.toml --check
+          cargo clippy --manifest-path remote/Cargo.toml --all-targets --locked -- -D warnings
+          cargo test --manifest-path remote/Cargo.toml --locked --target "$TARGET"
+          cargo build --manifest-path remote/Cargo.toml --release --locked --target "$TARGET"
+          "remote/target/$TARGET/release/clipbridge-remote" --version
+          scripts/package-native.sh --target "$TARGET" --binary "remote/target/$TARGET/release/clipbridge-remote"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: clipbridge-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  draft-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: clipbridge-*
+          path: dist
+          merge-multiple: true
+      - name: Verify and attach to a draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd dist
+          for checksum in *.sha256; do sha256sum -c "$checksum"; done
+          cd ..
+          tag="$GITHUB_REF_NAME"
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft); then
+            test "$draft" = true || { echo 'Refusing to change a published release.' >&2; exit 1; }
+          else
+            printf 'Native packages for %s. Review all assets and update these notes before publishing.\n' "$tag" > release-notes.md
+            gh release create "$tag" --draft --verify-tag --title "ClipBridge ${tag#v}" --notes-file release-notes.md
+          fi
+          gh release upload "$tag" dist/* --clobber

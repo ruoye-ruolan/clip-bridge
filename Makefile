@@ -1,4 +1,4 @@
-.PHONY: build test check package clean
+.PHONY: build test check package native-package clean
 
 build:
 	cargo build --release --locked --bin clipbridge
@@ -15,6 +15,9 @@ check:
 
 package:
 	cargo run --release --locked --bin package
+
+native-package: build
+	./scripts/package-native.sh --target "$$(rustc -vV | sed -n 's/^host: //p')" --binary target/release/clipbridge
 
 clean:
 	cargo clean

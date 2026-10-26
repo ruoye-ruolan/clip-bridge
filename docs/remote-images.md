@@ -2,15 +2,19 @@
 
 Last updated: 2026-10-25.
 
-ClipBridge 0.3.4 leaves the Mac clipboard unchanged. Local applications continue receiving the original image. For an SSH CLI, enable the Linux companion and reconnect SSH once to load its Bash/Zsh integration. Then run `codex`, `claude` or `opencode` normally. The companion provides a private X11 image clipboard without changing Ghostty shortcuts or inserting a file path into the terminal.
+ClipBridge 0.4.0 leaves the Mac clipboard unchanged. Local applications continue receiving the original image. For an SSH CLI, enable the Linux companion and reconnect SSH once to load its Bash/Zsh integration. Then run `codex`, `claude` or `opencode` normally. The companion provides a private X11 image clipboard without changing Ghostty shortcuts or inserting a file path into the terminal.
 
 Versions before 0.3 replaced the Mac clipboard with an uploaded file path, which terminal text paste could transmit directly. Image paste needs the remote CLI to read actual image data. Version 0.3 introduced an explicit launch wrapper to supply that connection; 0.3.1 invokes it automatically through shell integration.
 
 The implementation and isolated regression tests are available. The real X11 image path has also been verified on WSL2; full attachment rendering and shortcut delivery in actual Ghostty, Codex, Claude Code and OpenCode sessions still need acceptance testing. CLI versions must support reading an image from the supplied Linux clipboard.
 
-Mac 0.3.2 added alternative SSH aliases, and Mac 0.3.3 combined image transfer and publication into one SSH request with private connection reuse. Mac 0.3.4 bundles companion 0.3.2 to add OpenCode shell integration. This helper remains compatible with a running 0.3.1 clipboard backend.
+Mac 0.4.0 adds one-time Mac-side setup and prebuilt companion deployment. It retains companion 0.3.2, including OpenCode integration and compatibility with a running 0.3.1 clipboard backend. The same path supports ordinary Linux servers and WSL2; no remote desktop session is required.
 
 ## Validation Record
+
+On 2026-10-25, Mac toolkit 0.4.0 and companion 0.3.2 passed 186 automated tests, formatting and Clippy checks. Native builds completed for Apple Silicon and Intel macOS, plus statically linked x86_64 and aarch64 Linux companions. Claude Code's strict validator accepted the marketplace, plugin manifest and skills.
+
+The standalone installer upgraded the source Mac using local release assets and only system tools on PATH. The unified setup then deployed the x86_64 native companion to WSL2 without Cargo, preserving configuration values and the existing 0.3.1 backend/Xvfb processes. Separate isolated native-binary checks exercised version, dependencies and stopped status without starting a clipboard backend. Ordinary Linux uses the same platform path, but a separate non-WSL server, Linux ARM64 runtime and Intel Mac runtime have not yet been tested. These checks do not establish actual agent attachment rendering.
 
 On 2026-10-25, Mac toolkit 0.3.4 and companion 0.3.2 passed 153 automated tests, formatting and Clippy checks. New regression checks cover OpenCode argument and exit-status forwarding, scoped clipboard settings, alias/function conflicts, exact legacy snippet upgrades, and reuse of a compatible 0.3.1 backend while rejecting unknown versions.
 
@@ -30,56 +34,79 @@ On 2026-10-03, version 0.3.1 passed 92 Mac-toolkit tests and 23 companion tests.
 
 ## Prepare the Linux Host
 
-On the configured SSH host, provide:
+Default setup supports x86_64 and aarch64 Linux, including WSL2. On the remote account, provide:
 
-- Rust 1.94+, Cargo and a native linker for companion installation/upgrades.
-- `xvfb-run`, `Xvfb`, `xauth` and `xclip` for operation.
-- Standard shell utilities and an accessible Linux `/proc` filesystem for image publication.
-- The CLI you want to run, such as `codex`, `claude` or `opencode`, available on the remote shell's PATH.
+- Working SSH authentication and a verified host key.
+- `xvfb-run`, `Xvfb`, `xauth`, `xclip` and `sha256sum`.
+- A POSIX shell, ordinary file utilities and an accessible Linux `/proc` filesystem.
+- The desired CLI (`codex`, `claude` or `opencode`) on the interactive shell's PATH, with its own image-input dependencies.
 
-Choose an image directory owned and writable by the SSH account, with no group/other write permission. Uploads create a missing directory privately, but preserve an existing directory's permissions and refuse an unsafe destination. See [destination configuration](usage.md#configure-the-destination).
+Choose an image directory owned and writable by the SSH account, without group/other write permission. `clipbridge setup` defaults to `.local/share/clipbridge/images` under the remote account's home and creates it privately if needed. Existing directory permissions are preserved. See [destination configuration](usage.md#configure-the-destination).
 
-The Mac also needs Rust 1.94+ and Cargo for `remote setup`, even when the Mac executable is already installed. Setup uses the Mac's Cargo cache/configuration to prepare locked dependencies; the Mac needs registry access if they are not cached. It transfers those dependencies with the source, allowing the remote build to run without crates.io access. Normal monitoring and companion operation need no Rust toolchain on either host.
-
-For Debian/Ubuntu, an administrator can install the operating-system dependencies with:
+Setup checks the required utilities before installing a companion. If any are missing, an administrator must install the distribution's packages. On Debian/Ubuntu, for example:
 
 ```sh
-sudo apt-get install xvfb xclip xauth
+sudo apt-get install xvfb xauth xclip coreutils
 ```
 
-This command runs **on the remote host**. ClipBridge never executes `sudo` or installs system packages automatically. No existing graphical desktop or SSH X11 forwarding is needed: the companion creates its own authenticated virtual display.
+For Fedora/RHEL, use `dnf`; for Alpine, use `apk` to install packages providing the same programs. Package names and availability depend on the distribution and enabled repositories. ClipBridge prints dependency guidance and never runs a system package manager automatically.
+
+These requirements apply equally to a headless Linux server and WSL2. The companion creates an authenticated private virtual X display; no existing desktop or SSH X11 forwarding is needed. Default setup needs neither Cargo nor direct GitHub access on the remote host.
 
 ## Enable Image Publication
 
-Install or upgrade the Mac toolkit first, and configure `ssh_host` and `remote_directory` as described in [usage](usage.md#configure-the-destination). Then run **on the Mac**:
+Run initial setup **on the Mac whose clipboard you want to synchronize**. After [installing the Mac program](installation.md), run:
+
+```sh
+clipbridge setup
+```
+
+Choose an SSH alias, accept the remote-home image directory or provide another, and choose whether to start background monitoring at login. For explicit choices:
+
+```sh
+clipbridge setup --host dev-server --start
+```
+
+This checks the destination and Linux architecture, downloads the matching prebuilt companion and SHA-256 sidecar on the Mac, uploads the verified binary over SSH, installs Bash/Zsh integration, enables remote publication and applies the selected startup setting. Downloads are pinned to the Mac toolkit's exact GitHub release tag. ClipBridge 0.4.0 uses the companion assets attached to its [release](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.0); see [offline assets](installation.md#local-assets-and-offline-installation) for local development or restricted download access.
+
+Use `--no-start` instead of `--start` to leave monitoring stopped and disable existing managed login startup. Use `--no-shell` to keep explicit wrapper launches; it does not remove hooks already installed. See [setup options and failure handling](usage.md#one-time-setup).
+
+### Update an Already Configured Companion
+
+To install/update only the configured companion and its shell integration, run on the Mac:
 
 ```sh
 clipbridge remote setup
-clipbridge restart
 ```
 
-`remote setup` extracts the embedded companion source into a temporary directory and runs `cargo vendor --locked --respect-source-config` on the Mac. It uploads the source and vendored dependencies over SSH/SCP, runs `cargo build --release --frozen` offline on the SSH host, and installs a user-owned command. It then checks the X tools and any running backend's compatibility, installs remote Bash/Zsh integration and sets `"remote_clipboard": true` in the selected local JSON configuration.
+This command uses the existing JSON destination and prebuilt assets by default. It enables `remote_clipboard` after successful checks, but does not restart the Mac monitor. Run `clipbridge restart` if that flag changed; stop and rerun a foreground monitor instead when appropriate. A custom configuration can be selected with `clipbridge --config /absolute/path/config.json remote setup`.
 
-Setup preserves other JSON fields and does not start or restart monitoring. To keep manual wrapper launches or use an unsupported shell, run `clipbridge remote setup --no-shell`. This skips shell installation for that setup; it does not remove an existing integration. If dependencies are missing, install them remotely and rerun setup. The helper may already have been deployed, but the failed setup does not enable synchronization or change an existing configuration flag.
+Companion 0.3.2 accepts its own backend and the explicitly compatible 0.3.1 backend. A running 0.3.1 backend and its image can remain active during this update. Exact unmodified older shell snippets upgrade safely; edited snippets and unknown files are refused without modification. Reload integration and relaunch agents started without it. Already integrated agents need no relaunch when the backend remains unchanged.
 
-When upgrading to Mac 0.3.4, rerun `remote setup` to install companion 0.3.2 and add OpenCode to the managed snippet. The exact unmodified 0.3.1 snippet upgrades safely; edited snippets are refused without modification. A running 0.3.1 backend can remain active, preserving its display and current image. Reload the shell integration and relaunch any OpenCode process that was started without it; already integrated CLIs do not need relaunching for this compatible update.
-
-For a custom configuration, use the same path for both commands:
-
-```sh
-clipbridge --config /absolute/path/config.json remote setup
-clipbridge --config /absolute/path/config.json restart
-```
-
-To use foreground monitoring instead, stop the old foreground process and run `clipbridge run` again after setup. Rerun `remote setup` to deploy the companion bundled with a newer Mac toolkit; setup again requires Cargo on both hosts. Updating its executable does not transparently replace an already running backend. If setup reports an incompatible backend, run on the Mac:
+If setup reports an incompatible backend, explicitly stop it, repeat setup and relaunch remote CLIs:
 
 ```sh
 clipbridge remote stop
 clipbridge remote setup
-clipbridge restart
 ```
 
-Then reconnect SSH, relaunch remote CLIs and copy a new image. Companion deployment does not have the Mac installer's versioned rollback mechanism.
+A newly published image or integrated CLI launch starts the backend when needed. Setup itself does not start a private X server. Native helper activation checks the staged binary and attempts to restore the previous command if promotion fails. A later local configuration/startup failure can leave the successfully deployed helper installed; inspect the reported recovery result before retrying.
+
+### Source and Offline Deployment
+
+For a locally supplied companion binary and checksum, run:
+
+```sh
+clipbridge remote setup --assets-dir /absolute/path/to/assets
+```
+
+The asset directory is on the Mac. For an explicit source build:
+
+```sh
+clipbridge remote setup --build-from-source
+```
+
+Source deployment requires Rust 1.94+/Cargo and linkers on both hosts. The Mac vendors locked dependencies and uploads them with embedded sources; Linux builds with `--frozen` without registry access. Only the Mac needs registry access or cached dependencies. The source path is separate from native activation and does not provide its rollback guarantees. The flags are mutually exclusive; download failure does not silently select a source build.
 
 ## Start the Remote CLI
 

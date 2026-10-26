@@ -4,6 +4,8 @@ pub mod config;
 pub mod control;
 pub mod installer;
 pub mod monitor;
+pub mod release;
 pub mod remote;
 pub mod service;
+pub mod setup;
 pub mod transport;

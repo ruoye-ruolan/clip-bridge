@@ -2,59 +2,53 @@
 
 Last updated: 2026-10-25.
 
-Copy an image on your Mac and keep pasting it as an image locally. ClipBridge uploads a copy over SSH and can make it available to a remote CLI through a private Linux image clipboard.
+Copy a screenshot on your Mac and paste it as an image into a Linux or WSL2 CLI over SSH. ClipBridge keeps the original Mac clipboard image and publishes a copy to a private remote image clipboard.
 
-ClipBridge 0.3.4 is implemented in Rust, including native macOS clipboard access, and bundles Linux companion 0.3.2. The installed Mac program is one native executable with no language runtime requirement. Remote image pasting additionally needs Xvfb, xauth and xclip on the SSH host; see [remote image setup](docs/remote-images.md).
+**ClipBridge 0.4.0** bundles Linux companion 0.3.2. Install a native Mac package or use the Claude Code plugin for guided setup; neither path needs Rust or Cargo. Source builds and local assets remain available for [development and offline installation](docs/installation.md).
 
-Image transfer and remote publication now use one SSH request. Subsequent images can reuse a private connection until it has been idle for 60 seconds, reducing repeated handshakes on public networks. See [transfer speed](docs/usage.md#transfer-speed) for timing and connection limits.
+## Install and Set Up on Your Mac
 
-## Install or Migrate from Python 0.1
+Download the matching Mac archive and its `.sha256` file from [ClipBridge 0.4.0](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.0):
 
-Source installation requires macOS, Rust 1.94+ with Cargo, and Apple's Command Line Tools/linker SDK. From a trusted checkout or extracted source package:
+- Apple Silicon: `clipbridge-0.4.0-aarch64-apple-darwin.tar.gz`
+- Intel: `clipbridge-0.4.0-x86_64-apple-darwin.tar.gz`
+
+For Apple Silicon, run from the download directory:
 
 ```sh
+shasum -a 256 -c clipbridge-0.4.0-aarch64-apple-darwin.tar.gz.sha256
+tar -xzf clipbridge-0.4.0-aarch64-apple-darwin.tar.gz
+cd clipbridge-0.4.0-aarch64-apple-darwin
 ./install.sh
 export PATH="$HOME/.local/bin:$PATH"
-clipbridge --version
+clipbridge setup
 ```
 
-If needed, add the PATH export to your shell startup file. No `sudo` is needed. Existing configuration is preserved, and an already loaded service from this checkout or the managed installation is migrated. Fresh installation does not enable monitoring.
+Use the Intel filename on Intel Macs. Setup asks for your SSH alias, defaults the image directory to the remote account's home, and lets you choose background monitoring and login startup. It installs the Linux companion and Bash/Zsh integration from the Mac. Ordinary Linux servers and WSL2 use the same setup; neither needs Cargo or direct access to GitHub.
 
-**For migration from Python 0.1, run this new `install.sh`.** The older installed Python `upgrade` command cannot install a Rust-only source tree. Existing Rust installations use `clipbridge upgrade --from PATH`.
+The remote host needs `xvfb-run`, `Xvfb`, `xauth` and `xclip`. A desktop session is unnecessary. If dependencies are missing, setup prints instructions for your administrator; it does not install system packages. See [installation](docs/installation.md) and [Linux prerequisites](docs/remote-images.md#prepare-the-linux-host).
 
-## Configure and Start
+## Set Up Through Claude Code
 
-Edit `~/.config/clipbridge/config.json`. Installation preserves an existing file or creates a sample:
+Open Claude Code **on the Mac whose clipboard you want to sync**, then add and install the plugin:
 
-```json
-{
-  "ssh_host": "dev-server",
-  "remote_directory": "/home/example/.local/share/clipbridge/images"
-}
+```text
+/plugin marketplace add https://github.com/ruoye-ruolan/clip-bridge
+/plugin install clipbridge@clipbridge
+/clipbridge:setup
 ```
 
-Replace both values. `ssh_host` is your SSH alias, with noninteractive authentication and a verified host key. `remote_directory` is a required absolute path owned and writable by that SSH user, with no group/other write permission; uploads attempt to create it privately if needed.
+Complete the plugin install flow before invoking setup. The plugin guides installation and configuration; the native program runs independently of the plugin cache. It also provides `/clipbridge:status` and `/clipbridge:doctor`. See the [plugin guide](docs/plugins.md) for scope, updates and removal.
 
-For the same server reached through different network addresses, add its other SSH aliases with `ssh_aliases`; see [multiple network routes](docs/usage.md#multiple-network-routes). ClipBridge uses an existing matching session and does not reconnect SSH automatically.
+## Use It
 
-Keep a matching interactive `ssh YOUR_ALIAS` session open, then:
+Open a new SSH shell after setup and keep it connected:
 
 ```sh
-clipbridge start
+ssh dev-server
 ```
 
-Newly copied images from **all applications** are eligible. ClipBridge never changes the Mac clipboard, so local image paste remains available. Startup clipboard contents and images observed without a matching session are skipped. With the configuration above, images are uploaded only; paths appear in logs instead of replacing the clipboard. The setup wizard and `doctor` are optional.
-
-## Paste Images in a Remote CLI
-
-Prepare the remote Linux dependencies and Rust 1.94+/Cargo on both hosts as described in the [remote image guide](docs/remote-images.md). Setup vendors dependencies on the Mac, then builds offline on Linux. On your Mac:
-
-```sh
-clipbridge remote setup
-clipbridge restart
-```
-
-Setup installs shell integration for remote Bash or Zsh. Reconnect SSH once after setup, then start the desired CLI normally inside an ordinary `ssh dev-server` session:
+Inside that remote shell, start the desired CLI normally:
 
 ```sh
 codex
@@ -64,59 +58,35 @@ claude
 opencode
 ```
 
-Arguments work as usual, for example `codex resume`. The shell integration obtains the private clipboard connection for each launch without changing the parent shell's display settings. Existing aliases/functions are preserved; see the [manual fallback](docs/remote-images.md#manual-launch-and-custom-shells) if you see a conflict warning or your shell is unsupported.
+Copy a new image on the Mac, wait for **remote image clipboard ready**, then use the CLI's image-paste shortcut. Local image paste remains available. Existing CLI processes launched without integration need relaunching; existing aliases/functions are preserved. See [remote image use](docs/remote-images.md) for shell reloads, custom commands and terminal-specific validation limits.
 
-To add OpenCode to an existing installation, upgrade the Mac toolkit and rerun `clipbridge remote setup`, then reconnect SSH or reload the [shell integration](docs/remote-images.md#start-the-remote-cli). Companion 0.3.2 can keep using an already running 0.3.1 backend; this update does not require stopping that backend.
-
-Copy a new image and wait for the remote-ready notification or log entry before using the CLI's image-paste shortcut. Relaunch any CLI that was started without the integration so it receives the clipboard environment. Ghostty keybindings are unchanged. Real Ghostty/CLI attachment acceptance testing remains pending.
+Only new images copied while a matching ordinary SSH session is open are eligible. For multiple routes to the same server, configure [alternative SSH aliases](docs/usage.md#multiple-network-routes). The tool does not reconnect SSH automatically.
 
 ## Everyday Commands
 
 | Command | Action |
 | --- | --- |
-| `clipbridge start` | Start background monitoring or report the existing instance; switch from a cooperating foreground monitor |
-| `clipbridge run` | Monitor in the foreground; Ctrl+C stops intake and drains work |
-| `clipbridge restart` | Restart background monitoring with changed settings |
-| `clipbridge stop` | Stop the background service and disable login startup |
-| `clipbridge status` | Show monitor/service state |
-| `clipbridge logs --follow` | Follow background logs |
-| `clipbridge doctor` | Optionally check SSH access and existing directory permissions |
-| `clipbridge remote doctor` | Check remote image clipboard dependencies |
-| `clipbridge remote status` | Show remote helper state |
+| `clipbridge setup` | Configure the Mac, remote companion and startup choice |
+| `clipbridge hosts --json` | List local SSH aliases without connecting |
+| `clipbridge start` | Enable background monitoring and login startup |
+| `clipbridge stop` | Stop background monitoring and disable login startup |
+| `clipbridge status` | Show monitor state |
+| `clipbridge logs --follow` | Follow capture and upload results |
+| `clipbridge doctor` | Diagnose SSH and destination access |
+| `clipbridge remote status` | Show remote clipboard state |
+| `clipbridge uninstall` | Remove the Mac program/service while preserving user data |
 
-Repeated `start` does not interrupt a service using the same configuration file. See the [usage guide](docs/usage.md) for handoff behavior, queue limits, custom configuration and troubleshooting.
-
-## Upgrade and Uninstall
-
-```sh
-clipbridge upgrade --from /path/to/new-rust-source
-clipbridge uninstall
-```
-
-Upgrade compiles the selected source before invoking its installer, preserves configuration and attempts recovery if activation fails. Uninstall removes the owned program and service while keeping configuration, logs and images. See the [installation guide](docs/installation.md) for prerequisites, custom prefixes and recovery limits.
+Images use one SSH request and can reuse a private connection for 60 seconds of inactivity. See [transfer speed](docs/usage.md#transfer-speed), [configuration](docs/usage.md) and [upgrade/removal](docs/installation.md) for details.
 
 ## Repository Guide
 
-| File or directory | Purpose |
-| --- | --- |
-| [docs/installation.md](docs/installation.md) | Installation, migration, upgrades, removal and source distributions |
-| [docs/usage.md](docs/usage.md) | Configuration, commands, runtime behavior and troubleshooting |
-| [docs/remote-images.md](docs/remote-images.md) | Linux companion setup and image pasting in SSH CLI sessions |
-| [src/README.md](src/README.md) | Rust modules, build commands, tests and implementation boundaries |
-| [Product plan](docs/planning/product-direction-and-distribution.md) | Remaining release validation and future options |
-| [AGENTS.md](AGENTS.md) | Contributor and coding-agent guidelines |
+- [Installation and release packages](docs/installation.md)
+- [Linux/WSL clipboard setup](docs/remote-images.md)
+- [Claude Code plugin](docs/plugins.md)
+- [Chinese video tutorial](https://github.com/ruoye-ruolan/clip-bridge/tree/v0.4.0/tutorial) — 2:52, 1080p; covers the older 0.3.4 source-installation flow. Use the instructions above for 0.4.0 native/plugin setup.
+- [Rust development guide](src/README.md) and [contributor guidelines](AGENTS.md)
+- [Remaining validation and future plans](docs/planning/product-direction-and-distribution.md)
 
-## Development and Packaging
+Source development uses `make build`, `make check` and `make test`. `make package` creates a source archive; `make native-package` packages the current Mac build. Neither publishes a release. Native clipboard tests use private pasteboards, and service/network tests use isolated fixtures.
 
-```sh
-make build
-make check
-make test
-make package
-```
-
-The checks cover both Rust crates. Native clipboard tests use a private named pasteboard; remote tests use isolated state and fake X tools. Service and network tests are isolated; installation tests verify the executable after deleting their source fixture. `make package` creates an allowlisted source archive and checksum under `dist/`, without publishing a release.
-
-## License
-
-[MIT](LICENSE).
+[MIT License](LICENSE).

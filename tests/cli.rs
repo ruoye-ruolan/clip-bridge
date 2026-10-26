@@ -31,6 +31,8 @@ fn version_and_help_do_not_need_python_or_swift() {
         "upgrade",
         "uninstall",
         "configure",
+        "hosts",
+        "setup",
         "doctor",
         "start",
         "restart",
@@ -40,6 +42,40 @@ fn version_and_help_do_not_need_python_or_swift() {
     ] {
         assert!(text.contains(command));
     }
+}
+
+#[test]
+fn host_listing_is_offline_and_noninteractive_setup_requires_an_explicit_startup_choice() {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".ssh")).unwrap();
+    fs::write(
+        home.path().join(".ssh/config"),
+        "Host linux-prod wsl\n  HostName example.invalid\nHost *\n  ServerAliveInterval 30\n",
+    )
+    .unwrap();
+    let output = Command::new(binary())
+        .args(["hosts", "--json"])
+        .env("HOME", home.path())
+        .env("PATH", "/nonexistent")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["aliases"], serde_json::json!(["linux-prod", "wsl"]));
+    assert!(value["configured_host"].is_null());
+    let output = Command::new(binary())
+        .args(["setup", "--host", "linux-prod"])
+        .env("HOME", home.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--start or --no-start"));
+    assert!(!home.path().join(".config/clipbridge/config.json").exists());
 }
 
 #[test]

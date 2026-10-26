@@ -4,6 +4,7 @@ use clipbridge::{
     common::{CommandOutput, CommandSpec, Context, Runner, SystemRunner},
     installer,
 };
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -72,6 +73,24 @@ fn installed_native_binary_survives_source_deletion_and_preserves_config_on_upgr
     )
     .unwrap();
     let before = fs::read(ctx.default_config()).unwrap();
+    // Upgrade the source installation from an extracted native payload. The
+    // runner allows only executable probes, so invoking Cargo would fail here.
+    let candidate = source.join("clipbridge");
+    fs::copy(&ctx.executable, &candidate).unwrap();
+    fs::write(
+        source.join("bundle.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "product": "clipbridge", "schema": 1,
+            "version": env!("CARGO_PKG_VERSION"),
+            "target": format!("{}-apple-darwin", std::env::consts::ARCH),
+            "binary_sha256": format!("{:x}", Sha256::digest(fs::read(&candidate).unwrap()))
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    clipbridge::release::validate_native_bundle(&source).unwrap();
+    ctx.executable = candidate;
+    ctx.source = None;
     installer::install(&ctx, &source, Some(&prefix), true).unwrap();
     assert_eq!(root.join("previous").canonicalize().unwrap(), first);
     assert_eq!(fs::read(ctx.default_config()).unwrap(), before);
