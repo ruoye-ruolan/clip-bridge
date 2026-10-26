@@ -6,14 +6,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::clipboard::{ClipboardAccess, NativeClipboard};
-use crate::common::{CommandSpec, Context, atomic_write, lock, shell_quote, unique_id};
-use crate::config::{Config, SSH_OPTIONS};
+use crate::common::{CommandSpec, Context, atomic_write, lock, unique_id};
+use crate::config::Config;
 use crate::control;
+use crate::transport::{TransferResult, UploadTransport};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(300);
 const MAX_PENDING_UPLOADS: usize = 16;
@@ -36,14 +37,14 @@ pub fn is_session(args: &[String], host: &str) -> bool {
             index += 1;
             break;
         }
-        // -G/-V and control/query modes are not interactive sessions. Handle
-        // combined short options as well, so -vG cannot masquerade as a session.
+        // Queries, background/no-command tunnels and control operations are not
+        // interactive sessions. Also reject combined forms such as -vG/-fN.
         if option.starts_with("--") {
             return false;
         }
         let mut consumes_next = false;
         for (offset, flag) in option[1..].char_indices() {
-            if matches!(flag, 'G' | 'V' | 'O' | 'Q') {
+            if matches!(flag, 'G' | 'V' | 'O' | 'Q' | 'N' | 'f') {
                 return false;
             }
             if takes_value.contains(flag) {
@@ -59,6 +60,14 @@ pub fn is_session(args: &[String], host: &str) -> bool {
 /// Require both a matching SSH process owned by this user and an established socket.
 pub fn connected(ctx: &Context, host: &str) -> bool {
     connected_inner(ctx, host).unwrap_or(false)
+}
+
+/// Select only a configured alias with a live session, in configuration order.
+pub fn active_host(ctx: &Context, config: &Config) -> Option<String> {
+    config
+        .ssh_hosts()
+        .find(|host| connected(ctx, host))
+        .map(str::to_owned)
 }
 
 fn connected_inner(ctx: &Context, host: &str) -> Result<bool> {
@@ -134,23 +143,31 @@ fn notify(ctx: &Context, message: &str) {
 
 struct Capture {
     path: PathBuf,
+    ssh_host: String,
+    started: Instant,
 }
 
 enum UploadOutcome {
     Uploaded {
         local: PathBuf,
+        ssh_host: String,
         remote: String,
         remote_clipboard: bool,
+        elapsed: Duration,
     },
     RemoteClipboardFailed {
         local: PathBuf,
+        ssh_host: String,
         remote: String,
         error: anyhow::Error,
+        elapsed: Duration,
     },
     Skipped,
     Failed {
         local: PathBuf,
+        ssh_host: String,
         error: anyhow::Error,
+        elapsed: Duration,
     },
 }
 
@@ -160,25 +177,46 @@ fn capture(
     clipboard: &impl ClipboardAccess,
     count: i64,
 ) -> Result<Option<Capture>> {
-    if !clipboard.has_image() || !connected(ctx, &config.ssh_host) {
+    let started = Instant::now();
+    if !clipboard.has_image() {
         return Ok(None);
     }
+    let Some(ssh_host) = active_host(ctx, config) else {
+        return Ok(None);
+    };
     // The clipboard implementation checks its change count before and after conversion.
     let Some(png) = clipboard.capture_png(count)? else {
         return Ok(None);
     };
     let path = ctx.cache().join(format!("clipboard-{}.png", unique_id()));
     atomic_write(&path, &png, 0o600)?;
-    Ok(Some(Capture { path }))
+    log(format_args!(
+        "Captured image for ssh {ssh_host}: {}",
+        path.display()
+    ));
+    Ok(Some(Capture {
+        path,
+        ssh_host,
+        started,
+    }))
 }
 
-fn upload(ctx: &Context, config: &Config, capture: Capture) -> UploadOutcome {
+fn upload_with_transport(
+    ctx: &Context,
+    config: &Config,
+    capture: Capture,
+    transport: &mut UploadTransport,
+) -> UploadOutcome {
     let mut retained = capture.path.clone();
     let result = (|| -> Result<UploadOutcome> {
+        // Keep queued images on the route selected at capture. A different live
+        // alias must not receive an image intended for a disconnected session.
+        let config = config.for_host(&capture.ssh_host)?;
         if !connected(ctx, &config.ssh_host) {
             fs::remove_file(&capture.path)?;
             log(format_args!(
-                "Skipped after disconnect: {}",
+                "Skipped after ssh {} disconnected: {}",
+                config.ssh_host,
                 capture.path.display()
             ));
             return Ok(UploadOutcome::Skipped);
@@ -199,44 +237,30 @@ fn upload(ctx: &Context, config: &Config, capture: Capture) -> UploadOutcome {
             "{}/{filename}",
             config.remote_directory.trim_end_matches('/')
         );
-        let mkdir = format!(
-            "umask 077; mkdir -p -- {}",
-            shell_quote(&config.remote_directory)
-        );
-        ctx.exec(
-            CommandSpec::new("/usr/bin/ssh")
-                .args(SSH_OPTIONS.iter().copied())
-                .args([config.ssh_host.as_str(), mkdir.as_str()])
-                .timeout(35)
-                .uncancellable(),
-        )?;
-        let destination = format!("{}:{remote}", config.ssh_host);
-        ctx.exec(
-            CommandSpec::new("/usr/bin/scp")
-                .args(["-q"])
-                .args(SSH_OPTIONS.iter().copied())
-                .args([local.as_os_str(), destination.as_ref()])
-                .timeout(120)
-                .uncancellable(),
-        )?;
-        if config.remote_clipboard
-            && let Err(error) = crate::remote::publish(ctx, config, &remote)
+        if let TransferResult::PublicationFailed(error) =
+            transport.upload(&config, &local, &remote)?
         {
             return Ok(UploadOutcome::RemoteClipboardFailed {
                 local,
+                ssh_host: config.ssh_host,
                 remote,
                 error,
+                elapsed: capture.started.elapsed(),
             });
         }
         Ok(UploadOutcome::Uploaded {
             local,
+            ssh_host: config.ssh_host,
             remote,
             remote_clipboard: config.remote_clipboard,
+            elapsed: capture.started.elapsed(),
         })
     })();
     result.unwrap_or_else(|error| UploadOutcome::Failed {
         local: retained,
+        ssh_host: capture.ssh_host,
         error,
+        elapsed: capture.started.elapsed(),
     })
 }
 
@@ -244,17 +268,20 @@ fn finish_upload(outcome: UploadOutcome) -> Option<&'static str> {
     match outcome {
         UploadOutcome::Uploaded {
             local,
+            ssh_host,
             remote,
             remote_clipboard,
+            elapsed,
         } => {
             log(format_args!(
-                "Uploaded {} -> {remote}; local clipboard unchanged{}",
+                "Uploaded {} -> {ssh_host}:{remote}; local clipboard unchanged{}; capture-to-completion {} ms",
                 local.display(),
                 if remote_clipboard {
                     "; remote image clipboard ready"
                 } else {
                     ""
                 },
+                elapsed.as_millis(),
             ));
             let cleanup = fs::remove_file(&local).and_then(|()| {
                 if let Some(parent) = local.parent() {
@@ -277,22 +304,31 @@ fn finish_upload(outcome: UploadOutcome) -> Option<&'static str> {
         }
         UploadOutcome::RemoteClipboardFailed {
             local,
+            ssh_host,
             remote,
             error,
+            elapsed,
         } => {
             log(format_args!(
-                "Uploaded to {remote}, but remote clipboard sync failed: {error:#}; local clipboard unchanged; image retained at {}",
-                local.display()
+                "Uploaded to {ssh_host}:{remote}, but remote clipboard sync failed: {error:#}; local clipboard unchanged; image retained at {}; capture-to-completion {} ms",
+                local.display(),
+                elapsed.as_millis()
             ));
             Some(
                 "Uploaded, but remote clipboard sync failed; local image retained. See the ClipBridge log.",
             )
         }
         UploadOutcome::Skipped => None,
-        UploadOutcome::Failed { local, error } => {
+        UploadOutcome::Failed {
+            local,
+            ssh_host,
+            error,
+            elapsed,
+        } => {
             log(format_args!(
-                "Upload failed: {error:#}; retained at {}",
-                local.display()
+                "Upload via ssh {ssh_host} failed: {error:#}; retained at {}; capture-to-completion {} ms",
+                local.display(),
+                elapsed.as_millis()
             ));
             Some("Upload failed; local image retained. See the ClipBridge log.")
         }
@@ -386,8 +422,8 @@ fn run_with_clipboard(
         .context("Another ClipBridge instance may already be running")?;
     let registration = control::registration(ctx, config_path, foreground)?;
     log(format_args!(
-        "Watching new clipboard images; requires established ssh {} session",
-        config.ssh_host
+        "Watching new clipboard images; requires an established SSH session for one of: {}",
+        config.ssh_hosts().collect::<Vec<_>>().join(", ")
     ));
     thread::scope(|scope| {
         let (sender, jobs) = mpsc::sync_channel(MAX_PENDING_UPLOADS);
@@ -402,12 +438,14 @@ fn run_with_clipboard(
             }
         });
         let worker = scope.spawn(move || {
+            let mut transport = UploadTransport::new(ctx);
             for capture in jobs {
-                let outcome = upload(ctx, config, capture);
+                let outcome = upload_with_transport(ctx, config, capture, &mut transport);
                 if completed.send(outcome).is_err() {
                     break;
                 }
             }
+            transport.close()
         });
         let intake_result = intake(
             ctx,
@@ -435,7 +473,7 @@ fn run_with_clipboard(
         let notifier_result = notifier
             .join()
             .map_err(|_| anyhow!("Notification worker panicked"));
-        worker_result?;
+        worker_result??;
         notifier_result?;
         intake_result.and(completion_result)
     })
@@ -447,7 +485,46 @@ mod tests {
     use crate::common::{CommandOutput, Runner, lock_held};
     use std::cell::Cell;
     use std::sync::{Arc, Mutex, atomic::AtomicBool};
-    use std::time::Instant;
+
+    fn receipt(spec: &CommandSpec) -> String {
+        let command = spec.args.last().unwrap().to_string_lossy();
+        let start = command.find("CLIPBRIDGE_COMMITTED_").unwrap();
+        command[start..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect()
+    }
+
+    fn assert_stream_destination(command: &str, remote: &str) {
+        let arguments = shell_words::split(command).unwrap();
+        assert_eq!(&arguments[..2], &["sh", "-c"]);
+        let script = &arguments[2];
+        let path = Path::new(remote);
+        assert!(script.contains(&format!("cd -P -- {}", path.parent().unwrap().display())));
+        assert!(script.contains(&format!(
+            "destination={}",
+            path.file_name().unwrap().to_str().unwrap()
+        )));
+        assert!(script.contains("\"/proc/$$/cwd/$destination\""));
+    }
+
+    fn control_path(spec: &CommandSpec) -> String {
+        spec.args
+            .iter()
+            .find_map(|arg| {
+                arg.to_string_lossy()
+                    .strip_prefix("ControlPath=")
+                    .map(str::to_owned)
+            })
+            .unwrap()
+    }
+
+    fn upload(ctx: &Context, config: &Config, capture: Capture) -> UploadOutcome {
+        let mut transport = UploadTransport::new(ctx);
+        let outcome = upload_with_transport(ctx, config, capture, &mut transport);
+        transport.close().unwrap();
+        outcome
+    }
 
     struct NotificationGate {
         started: AtomicBool,
@@ -460,9 +537,11 @@ mod tests {
     struct FakeRunner {
         calls: Mutex<Vec<CommandSpec>>,
         listing: Mutex<Option<String>>,
+        socket_pids: Mutex<Option<Vec<String>>>,
         offline: AtomicBool,
-        fail_scp: AtomicBool,
+        fail_transfer: AtomicBool,
         fail_publish: AtomicBool,
+        published: AtomicBool,
         check_drain: Option<PathBuf>,
         expect_cancelled: bool,
         notification_gate: Option<Arc<NotificationGate>>,
@@ -482,23 +561,15 @@ mod tests {
                         })
                     };
                 }
-                "/usr/sbin/lsof" => output.stdout = "p42\nn127.0.0.1:54000->127.0.0.1:22\n".into(),
-                "/usr/bin/scp" => {
-                    if let Some(cache) = &self.check_drain {
-                        assert!(lock_held(&cache.join("watcher.lock")).unwrap());
-                        assert!(cache.join("monitor.json").exists());
-                        if self.expect_cancelled {
-                            assert!(cancelled.load(Ordering::SeqCst));
-                        }
-                        assert!(!spec.cancellable);
-                        // Holding the lock through a slow worker prevents a second instance.
-                        thread::sleep(Duration::from_millis(350));
-                        assert!(lock_held(&cache.join("watcher.lock")).unwrap());
-                        fs::write(cache.join("worker-finished"), b"finished").unwrap();
-                    }
-                    if self.fail_scp.load(Ordering::SeqCst) {
-                        output.code = 1;
-                        output.stderr = "test transfer failure".into();
+                "/usr/sbin/lsof" => {
+                    let connected = self.socket_pids.lock().unwrap();
+                    let has_socket = spec.args[3].to_string_lossy().split(',').any(|pid| {
+                        connected
+                            .as_ref()
+                            .map_or(pid == "42", |pids| pids.iter().any(|value| value == pid))
+                    });
+                    if has_socket {
+                        output.stdout = "n127.0.0.1:54000->127.0.0.1:22\n".into();
                     }
                 }
                 "/usr/bin/osascript" => {
@@ -519,18 +590,48 @@ mod tests {
                     }
                 }
                 "/usr/bin/ssh" => {
-                    if spec
-                        .args
-                        .last()
-                        .is_some_and(|arg| arg.to_string_lossy().contains(" publish -- "))
-                    {
+                    if spec.stdin_file.is_none() {
+                        assert!(spec.args.iter().any(|arg| arg == "-O"));
+                        let socket = spec.args.windows(2).find(|args| args[0] == "-S").unwrap();
+                        fs::remove_file(Path::new(&socket[1])).unwrap();
                         if let Some(cache) = &self.check_drain {
                             assert!(lock_held(&cache.join("watcher.lock")).unwrap());
                             assert!(cache.join("monitor.json").exists());
-                            if self.expect_cancelled {
-                                assert!(cancelled.load(Ordering::SeqCst));
-                            }
-                            assert!(!spec.cancellable);
+                            fs::write(cache.join("transport-finished"), b"finished").unwrap();
+                        }
+                        return Ok(output);
+                    }
+                    let script = spec.args.last().unwrap().to_string_lossy();
+                    let receipt = receipt(spec);
+                    if let Some(cache) = &self.check_drain {
+                        assert!(lock_held(&cache.join("watcher.lock")).unwrap());
+                        assert!(cache.join("monitor.json").exists());
+                        if self.expect_cancelled {
+                            assert!(cancelled.load(Ordering::SeqCst));
+                        }
+                        assert!(!spec.cancellable);
+                        // A slow transfer and transport teardown both retain the monitor lock.
+                        thread::sleep(Duration::from_millis(350));
+                        assert!(lock_held(&cache.join("watcher.lock")).unwrap());
+                        fs::write(cache.join("worker-finished"), b"finished").unwrap();
+                        let socket = control_path(spec).replace("%C", &"a".repeat(40));
+                        if !Path::new(&socket).exists() {
+                            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+                            use std::os::unix::fs::PermissionsExt;
+                            fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
+                                .unwrap();
+                            drop(listener);
+                        }
+                    }
+                    if self.fail_transfer.load(Ordering::SeqCst) {
+                        output.code = 1;
+                        output.stderr = "test transfer failure".into();
+                        return Ok(output);
+                    }
+                    output.stdout = format!("{receipt}\n");
+                    if script.contains(" publish -- ") {
+                        self.published.store(true, Ordering::SeqCst);
+                        if let Some(cache) = &self.check_drain {
                             fs::write(cache.join("publish-finished"), b"finished").unwrap();
                         }
                         if self.fail_publish.load(Ordering::SeqCst) {
@@ -609,6 +710,7 @@ mod tests {
     fn config() -> Config {
         Config {
             ssh_host: "dev-server".into(),
+            ssh_aliases: Vec::new(),
             remote_directory: "/home/example/images".into(),
             remote_clipboard: false,
         }
@@ -617,7 +719,11 @@ mod tests {
     fn captured(ctx: &Context) -> Capture {
         let path = ctx.cache().join("capture.png");
         atomic_write(&path, b"test PNG bytes", 0o600).unwrap();
-        Capture { path }
+        Capture {
+            path,
+            ssh_host: "dev-server".into(),
+            started: Instant::now(),
+        }
     }
 
     #[test]
@@ -646,6 +752,11 @@ mod tests {
             "ssh -Ocheck dev-server",
             "ssh -Q cipher",
             "ssh -V",
+            "ssh -N dev-server",
+            "ssh -fN dev-server",
+            "ssh -f dev-server",
+            "ssh: /private/tmp/clipbridge-socket [mux]",
+            "ssh -o ControlMaster=auto -o ControlPersist=60 dev-server 'sh -c upload'",
             "ssh --bad dev-server",
             "ssh -p",
             "ssh -p dev-server",
@@ -672,6 +783,219 @@ mod tests {
         runner.offline.store(true, Ordering::SeqCst);
         assert!(!connected(&ctx, "dev-server"));
         assert_eq!(runner.calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn active_host_preserves_primary_and_selects_live_aliases_in_order() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let ctx = context(home.path(), runner.clone());
+        let mut config = config();
+        assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-server"));
+        config.ssh_aliases = vec!["dev-lan".into(), "dev-ipv6".into()];
+        *runner.listing.lock().unwrap() =
+            Some("42 501 ssh dev-server\n45 501 ssh dev-lan\n46 501 ssh dev-ipv6\n".into());
+        *runner.socket_pids.lock().unwrap() = Some(vec!["42".into(), "45".into(), "46".into()]);
+        assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-server"));
+        *runner.socket_pids.lock().unwrap() = Some(vec!["45".into(), "46".into()]);
+        assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-lan"));
+        *runner.socket_pids.lock().unwrap() = Some(vec!["46".into()]);
+        assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-ipv6"));
+    }
+
+    #[test]
+    fn active_host_rejects_wrong_owner_missing_socket_and_unconfigured_aliases() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let ctx = context(home.path(), runner.clone());
+        let mut config = config();
+        config.ssh_aliases = vec!["dev-lan".into()];
+        *runner.listing.lock().unwrap() =
+            Some("42 502 ssh dev-server\n45 501 ssh dev-lan\n46 501 ssh elsewhere\n".into());
+        *runner.socket_pids.lock().unwrap() = Some(vec!["42".into(), "46".into()]);
+        assert!(active_host(&ctx, &config).is_none());
+        let calls = runner.calls.lock().unwrap();
+        let socket_calls: Vec<_> = calls
+            .iter()
+            .filter(|call| call.program == Path::new("/usr/sbin/lsof"))
+            .collect();
+        assert_eq!(socket_calls.len(), 1);
+        assert_eq!(socket_calls[0].args[3], "45");
+    }
+
+    #[test]
+    fn captured_alias_routes_mkdir_transfer_and_publish_even_when_primary_returns() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let ctx = context(home.path(), runner.clone());
+        let mut config = config();
+        config.ssh_aliases = vec!["dev-lan".into()];
+        config.remote_clipboard = true;
+        *runner.listing.lock().unwrap() = Some("45 501 ssh dev-lan\n".into());
+        *runner.socket_pids.lock().unwrap() = Some(vec!["45".into()]);
+        let image = capture(&ctx, &config, &FakeClipboard::default(), 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(image.ssh_host, "dev-lan");
+        // Queue delay can change which host has priority, but not this image's route.
+        *runner.listing.lock().unwrap() =
+            Some("42 501 ssh dev-server\n45 501 ssh dev-lan\n".into());
+        *runner.socket_pids.lock().unwrap() = Some(vec!["42".into(), "45".into()]);
+        assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-server"));
+        runner.calls.lock().unwrap().clear();
+        let outcome = upload(&ctx, &config, image);
+        let UploadOutcome::Uploaded {
+            ref ssh_host,
+            ref remote,
+            remote_clipboard: true,
+            ..
+        } = outcome
+        else {
+            panic!("Captured alias should receive the upload");
+        };
+        assert_eq!(ssh_host, "dev-lan");
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[1].args[3], "45", "Only the pinned session is checked");
+        let transfers: Vec<_> = calls
+            .iter()
+            .filter(|call| call.stdin_file.is_some())
+            .collect();
+        assert_eq!(transfers.len(), 1);
+        let transfer = transfers[0];
+        assert_eq!(transfer.program, Path::new("/usr/bin/ssh"));
+        assert_eq!(transfer.args[transfer.args.len() - 2], "dev-lan");
+        let script = transfer.args.last().unwrap().to_string_lossy();
+        assert_stream_destination(&script, remote);
+        assert!(script.contains(" publish -- "));
+        assert!(runner.published.load(Ordering::SeqCst));
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.program != Path::new("/usr/bin/scp"))
+        );
+        drop(calls);
+        finish_upload(outcome);
+    }
+
+    #[test]
+    fn disconnected_capture_is_not_retargeted_to_another_live_alias() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let ctx = context(home.path(), runner.clone());
+        let mut config = config();
+        config.ssh_aliases = vec!["dev-lan".into()];
+        let image = capture(&ctx, &config, &FakeClipboard::default(), 10)
+            .unwrap()
+            .unwrap();
+        let path = image.path.clone();
+        *runner.listing.lock().unwrap() = Some("45 501 ssh dev-lan\n".into());
+        *runner.socket_pids.lock().unwrap() = Some(vec!["45".into()]);
+        assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-lan"));
+        runner.calls.lock().unwrap().clear();
+        assert!(matches!(
+            upload(&ctx, &config, image),
+            UploadOutcome::Skipped
+        ));
+        assert!(!path.exists());
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].program, Path::new("/bin/ps"));
+    }
+
+    #[test]
+    fn consecutive_images_reuse_transport_and_measure_queue_wait() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let ctx = context(home.path(), runner.clone());
+        let mut config = config();
+        config.ssh_aliases = vec!["dev-lan".into()];
+        config.remote_clipboard = true;
+        let mut transport = UploadTransport::new(&ctx);
+        let mut first = captured(&ctx);
+        first.started = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let outcome = upload_with_transport(&ctx, &config, first, &mut transport);
+        let UploadOutcome::Uploaded { elapsed, .. } = &outcome else {
+            panic!("First image should be uploaded");
+        };
+        assert!(
+            *elapsed >= Duration::from_secs(1),
+            "Queue wait must be included"
+        );
+        finish_upload(outcome);
+        let outcome = upload_with_transport(&ctx, &config, captured(&ctx), &mut transport);
+        assert!(matches!(outcome, UploadOutcome::Uploaded { .. }));
+        finish_upload(outcome);
+
+        *runner.listing.lock().unwrap() = Some("45 501 ssh dev-lan\n".into());
+        *runner.socket_pids.lock().unwrap() = Some(vec!["45".into()]);
+        let mut alternate = captured(&ctx);
+        alternate.ssh_host = "dev-lan".into();
+        let outcome = upload_with_transport(&ctx, &config, alternate, &mut transport);
+        assert!(matches!(outcome, UploadOutcome::Uploaded { .. }));
+        finish_upload(outcome);
+        let calls = runner.calls.lock().unwrap();
+        let transfers: Vec<_> = calls
+            .iter()
+            .filter(|call| call.stdin_file.is_some())
+            .collect();
+        assert_eq!(transfers.len(), 3);
+        assert_eq!(control_path(transfers[0]), control_path(transfers[1]));
+        assert_ne!(receipt(transfers[0]), receipt(transfers[1]));
+        assert_ne!(control_path(transfers[0]), control_path(transfers[2]));
+        for transfer in transfers {
+            let args = std::iter::once(transfer.program.to_string_lossy().into_owned())
+                .chain(
+                    transfer
+                        .args
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned()),
+                )
+                .collect::<Vec<_>>();
+            assert!(!is_session(&args, "dev-server"));
+            assert!(!is_session(&args, "dev-lan"));
+        }
+        drop(calls);
+        transport.close().unwrap();
+    }
+
+    #[test]
+    fn unconfigured_captured_alias_is_rejected_without_subprocesses() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let ctx = context(home.path(), runner.clone());
+        let mut image = captured(&ctx);
+        image.ssh_host = "elsewhere".into();
+        let path = image.path.clone();
+        assert!(matches!(
+            upload(&ctx, &config(), image),
+            UploadOutcome::Failed { .. }
+        ));
+        assert!(path.exists());
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_transfer_never_retries_on_another_live_alias() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let ctx = context(home.path(), runner.clone());
+        let mut config = config();
+        config.ssh_aliases = vec!["dev-lan".into()];
+        config.remote_clipboard = true;
+        *runner.listing.lock().unwrap() =
+            Some("42 501 ssh dev-server\n45 501 ssh dev-lan\n".into());
+        *runner.socket_pids.lock().unwrap() = Some(vec!["42".into(), "45".into()]);
+        runner.fail_transfer.store(true, Ordering::SeqCst);
+        let outcome = upload(&ctx, &config, captured(&ctx));
+        assert!(matches!(outcome, UploadOutcome::Failed { .. }));
+        let calls = runner.calls.lock().unwrap();
+        let transfers: Vec<_> = calls
+            .iter()
+            .filter(|call| call.stdin_file.is_some())
+            .collect();
+        assert_eq!(transfers.len(), 1);
+        assert_eq!(transfers[0].args[transfers[0].args.len() - 2], "dev-server");
+        assert!(!runner.published.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -725,7 +1049,7 @@ mod tests {
     fn failed_upload_retains_image_and_never_updates_clipboard() {
         let home = tempfile::tempdir().unwrap();
         let runner = Arc::new(FakeRunner::default());
-        runner.fail_scp.store(true, Ordering::SeqCst);
+        runner.fail_transfer.store(true, Ordering::SeqCst);
         let ctx = context(home.path(), runner.clone());
         let board = FakeClipboard::default();
         let image = capture(&ctx, &config(), &board, 10).unwrap().unwrap();
@@ -738,15 +1062,18 @@ mod tests {
         assert_eq!(board.count.get(), 10);
         assert_eq!(board.capture_png(10).unwrap().unwrap(), b"test PNG bytes");
         let calls = runner.calls.lock().unwrap();
-        let scp = calls
-            .iter()
-            .find(|call| call.program == Path::new("/usr/bin/scp"))
-            .unwrap();
-        assert_eq!(scp.timeout, Duration::from_secs(120));
-        assert!(!scp.cancellable);
-        for option in SSH_OPTIONS {
-            assert!(scp.args.iter().any(|arg| arg == option));
-        }
+        let transfer = calls.iter().find(|call| call.stdin_file.is_some()).unwrap();
+        assert_eq!(transfer.program, Path::new("/usr/bin/ssh"));
+        assert_eq!(transfer.timeout, Duration::from_secs(150));
+        assert!(!transfer.cancellable);
+        assert!(
+            transfer
+                .args
+                .iter()
+                .any(|arg| arg == "StrictHostKeyChecking=yes")
+        );
+        assert!(transfer.args.iter().any(|arg| arg == "BatchMode=yes"));
+        assert!(transfer.args.iter().any(|arg| arg == "ConnectTimeout=30"));
     }
 
     #[test]
@@ -815,26 +1142,26 @@ mod tests {
             panic!("Remote clipboard publication should succeed");
         };
         let calls = runner.calls.lock().unwrap();
-        let publish = calls.last().unwrap();
-        assert_eq!(publish.program, Path::new("/usr/bin/ssh"));
-        assert_eq!(calls[calls.len() - 2].program, Path::new("/usr/bin/scp"));
-        assert_eq!(publish.args[publish.args.len() - 2], "dev-server");
-        let remote_command = publish.args.last().unwrap().to_string_lossy();
-        assert_eq!(
-            shell_words::split(&remote_command).unwrap(),
-            [
-                "exec",
-                "$HOME/.local/bin/clipbridge-remote",
-                "publish",
-                "--",
-                remote
-            ]
+        let transfers: Vec<_> = calls
+            .iter()
+            .filter(|call| call.stdin_file.is_some())
+            .collect();
+        assert_eq!(transfers.len(), 1);
+        let transfer = transfers[0];
+        assert_eq!(transfer.program, Path::new("/usr/bin/ssh"));
+        assert_eq!(transfer.args[transfer.args.len() - 2], "dev-server");
+        let remote_command = transfer.args.last().unwrap().to_string_lossy();
+        assert_stream_destination(&remote_command, remote);
+        assert!(remote_command.contains(" publish -- "));
+        assert!(!transfer.cancellable);
+        assert_eq!(transfer.timeout, Duration::from_secs(150));
+        assert!(
+            transfer
+                .args
+                .iter()
+                .any(|arg| arg == "StrictHostKeyChecking=yes")
         );
-        assert!(!publish.cancellable);
-        assert!(publish.timeout <= Duration::from_secs(35));
-        for option in SSH_OPTIONS {
-            assert!(publish.args.iter().any(|arg| arg == option));
-        }
+        assert!(runner.published.load(Ordering::SeqCst));
         drop(calls);
         assert!(
             finish_upload(outcome)
@@ -875,7 +1202,7 @@ mod tests {
     fn failed_file_transfer_never_publishes_remote_clipboard() {
         let home = tempfile::tempdir().unwrap();
         let runner = Arc::new(FakeRunner::default());
-        runner.fail_scp.store(true, Ordering::SeqCst);
+        runner.fail_transfer.store(true, Ordering::SeqCst);
         let ctx = context(home.path(), runner.clone());
         let mut config = config();
         config.remote_clipboard = true;
@@ -883,11 +1210,17 @@ mod tests {
             upload(&ctx, &config, captured(&ctx)),
             UploadOutcome::Failed { .. }
         ));
-        assert!(runner.calls.lock().unwrap().iter().all(|call| {
-            call.args
-                .last()
-                .is_none_or(|arg| !arg.to_string_lossy().contains(" publish -- "))
-        }));
+        assert!(!runner.published.load(Ordering::SeqCst));
+        assert_eq!(
+            runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.stdin_file.is_some())
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -926,7 +1259,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .all(|call| call.program != Path::new("/usr/bin/scp"))
+                .all(|call| call.stdin_file.is_none())
         );
         assert_eq!(fs::read(other).unwrap(), b"private");
     }
@@ -951,6 +1284,7 @@ mod tests {
         run_with_clipboard(&ctx, &ctx.default_config(), &config, true, &board).unwrap();
         assert!(cache.join("worker-finished").exists());
         assert!(cache.join("publish-finished").exists());
+        assert!(cache.join("transport-finished").exists());
         assert_eq!(board.count.get(), 11);
         assert!(board.has_image());
         assert!(!lock_held(&cache.join("watcher.lock")).unwrap());
@@ -973,6 +1307,7 @@ mod tests {
         };
         assert!(run_with_clipboard(&ctx, &ctx.default_config(), &config(), true, &board).is_err());
         assert!(cache.join("worker-finished").exists());
+        assert!(cache.join("transport-finished").exists());
         assert_eq!(board.count.get(), 11);
         assert!(board.has_image());
         assert!(!lock_held(&cache.join("watcher.lock")).unwrap());
@@ -1104,12 +1439,22 @@ mod tests {
             let path = home.path().join(format!("pending-{index}.png"));
             fs::write(&path, b"queued image").unwrap();
             existing.push(path.clone());
-            submit_capture(&sender, Capture { path }).unwrap();
+            submit_capture(
+                &sender,
+                Capture {
+                    path,
+                    ssh_host: "dev-server".into(),
+                    started: Instant::now(),
+                },
+            )
+            .unwrap();
         }
         let discarded = home.path().join("new-image.png");
         fs::write(&discarded, b"new image").unwrap();
         let extra = Capture {
             path: discarded.clone(),
+            ssh_host: "dev-server".into(),
+            started: Instant::now(),
         };
         let (done, result) = mpsc::channel();
         let worker = thread::spawn(move || done.send(submit_capture(&sender, extra)).unwrap());
@@ -1137,8 +1482,10 @@ mod tests {
         }
         let outcome = UploadOutcome::Uploaded {
             local: local.clone(),
+            ssh_host: "dev-server".into(),
             remote: "/home/example/images/shot.png".into(),
             remote_clipboard: false,
+            elapsed: Duration::from_millis(25),
         };
         let (done, result) = mpsc::channel();
         let worker = thread::spawn(move || {

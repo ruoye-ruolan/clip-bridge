@@ -1,6 +1,7 @@
 //! Opt-in remote image clipboard setup and publication over the configured SSH host.
 use crate::common::{self, CommandSpec, Context, atomic_write, shell_quote};
 use crate::config::{Config, SSH_OPTIONS};
+use crate::monitor;
 use anyhow::{Context as _, Result, bail};
 use flate2::{Compression, write::GzEncoder};
 use serde_json::Value;
@@ -15,6 +16,29 @@ const HELPER_FILES: &[(&str, &[u8])] = &[
     ("src/shell.rs", include_bytes!("../remote/src/shell.rs")),
 ];
 const MARKER: &str = "clipbridge-remote-install-v1";
+
+fn operation_config(ctx: &Context, config_path: &Path) -> Result<(Config, Config)> {
+    let configured = Config::load(config_path)?;
+    let host =
+        monitor::active_host(ctx, &configured).unwrap_or_else(|| configured.ssh_host.clone());
+    let selected = configured.for_host(&host)?;
+    println!("SSH route: {host}");
+    Ok((configured, selected))
+}
+
+fn check_setup_destination(current: &Config, original: &Config) -> Result<()> {
+    current.validate()?;
+    if current.ssh_host != original.ssh_host
+        || current.ssh_aliases != original.ssh_aliases
+        || current.remote_directory.trim_end_matches('/')
+            != original.remote_directory.trim_end_matches('/')
+    {
+        bail!(
+            "SSH destination changed during setup; synchronization was not enabled. Rerun setup with the current configuration."
+        );
+    }
+    Ok(())
+}
 
 fn ssh(
     ctx: &Context,
@@ -147,7 +171,7 @@ pub fn setup_with_shell(
     config_path: &Path,
     integrate_shell: bool,
 ) -> Result<String> {
-    let config = Config::load(config_path)?;
+    let (original, config) = operation_config(ctx, config_path)?;
     println!("Preparing remote source and locked dependencies on this Mac...");
     let file = archive(ctx)?;
     let id = common::unique_id();
@@ -170,11 +194,7 @@ pub fn setup_with_shell(
     helper(ctx, &config, "status", 20).context(
         "Remote helper was updated, but its running backend is incompatible or unavailable. Run clipbridge remote stop, rerun remote setup, and relaunch remote CLIs through the wrapper")?;
     let shell_result = if integrate_shell {
-        if Config::load(config_path)?.ssh_host != config.ssh_host {
-            bail!(
-                "SSH destination changed during setup; synchronization was not enabled. Rerun setup for the new host."
-            );
-        }
+        check_setup_destination(&Config::load(config_path)?, &original)?;
         helper(ctx, &config, "shell install", 20).context(
             "Remote helper is deployed, but shell integration could not be installed. Resolve the reported shell configuration issue, or rerun remote setup --no-shell to keep manual wrapper startup")?
     } else {
@@ -183,12 +203,7 @@ pub fn setup_with_shell(
     // Preserve formatting-independent unknown fields in the user's configuration.
     let latest = fs::read(config_path)?;
     let current: Config = serde_json::from_slice(&latest)?;
-    current.validate()?;
-    if current.ssh_host != config.ssh_host {
-        bail!(
-            "SSH destination changed during setup; remote helper was deployed to the previous host but synchronization was not enabled. Rerun setup for the new host."
-        );
-    }
+    check_setup_destination(&current, &original)?;
     let mut value: Value = serde_json::from_slice(&latest)?;
     let object = value
         .as_object_mut()
@@ -214,13 +229,16 @@ pub fn setup_with_shell(
     ))
 }
 pub fn doctor(ctx: &Context, config_path: &Path) -> Result<String> {
-    helper(ctx, &Config::load(config_path)?, "doctor", 20)
+    let (_, config) = operation_config(ctx, config_path)?;
+    helper(ctx, &config, "doctor", 20)
 }
 pub fn status(ctx: &Context, config_path: &Path) -> Result<String> {
-    helper(ctx, &Config::load(config_path)?, "status", 20)
+    let (_, config) = operation_config(ctx, config_path)?;
+    helper(ctx, &config, "status", 20)
 }
 pub fn stop(ctx: &Context, config_path: &Path) -> Result<String> {
-    helper(ctx, &Config::load(config_path)?, "stop", 20)
+    let (_, config) = operation_config(ctx, config_path)?;
+    helper(ctx, &config, "stop", 20)
 }
 
 #[cfg(test)]
@@ -239,10 +257,29 @@ mod tests {
         shell_failure: bool,
         config_update: Option<(PathBuf, Vec<u8>)>,
         vendor_fixture: bool,
+        active_alias: Option<String>,
     }
     impl Runner for Fake {
         fn run(&self, spec: &CommandSpec, _: &AtomicBool) -> Result<CommandOutput> {
             self.calls.lock().unwrap().push(spec.clone());
+            if spec.program == Path::new("/bin/ps") {
+                return Ok(CommandOutput {
+                    code: 0,
+                    stdout: self
+                        .active_alias
+                        .as_ref()
+                        .map(|host| format!("42 501 ssh {host}\n"))
+                        .unwrap_or_default(),
+                    stderr: String::new(),
+                });
+            }
+            if spec.program == Path::new("/usr/sbin/lsof") {
+                return Ok(CommandOutput {
+                    code: 0,
+                    stdout: "n127.0.0.1:1234->127.0.0.2:22\n".into(),
+                    stderr: String::new(),
+                });
+            }
             if self.shell_failure
                 && spec
                     .args
@@ -503,6 +540,89 @@ mod tests {
             .filter(|call| call.program == Path::new("/usr/bin/ssh"))
         {
             assert_eq!(call.args[call.args.len() - 2], "original");
+        }
+    }
+
+    #[test]
+    fn setup_uses_one_active_alternative_for_all_remote_steps_and_preserves_aliases() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("config.json");
+        fs::write(&path, br#"{"ssh_host":"primary","ssh_aliases":["lan"],"remote_directory":"/tmp/images/","custom":"keep"}"#).unwrap();
+        let runner = Arc::new(Fake {
+            active_alias: Some("lan".into()),
+            ..Fake::default()
+        });
+        let ctx = context(home.path(), runner.clone());
+        setup(&ctx, &path).unwrap();
+        let saved = Config::load(&path).unwrap();
+        assert_eq!(saved.ssh_host, "primary");
+        assert_eq!(saved.ssh_aliases, ["lan"]);
+        assert!(saved.remote_clipboard);
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["custom"], "keep");
+        for call in runner.calls.lock().unwrap().iter() {
+            if call.program == Path::new("/usr/bin/ssh") {
+                assert_eq!(call.args[call.args.len() - 2], "lan");
+            } else if call.program == Path::new("/usr/bin/scp") {
+                assert!(
+                    call.args
+                        .last()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("lan:")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changing_aliases_or_directory_during_setup_refuses_shell_edits_and_enablement() {
+        for replacement in [
+            br#"{"ssh_host":"primary","ssh_aliases":["different"],"remote_directory":"/tmp/images"}"#.as_slice(),
+            br#"{"ssh_host":"primary","ssh_aliases":["lan"],"remote_directory":"/tmp/new"}"#.as_slice(),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let path = home.path().join("config.json");
+            fs::write(&path, br#"{"ssh_host":"primary","ssh_aliases":["lan"],"remote_directory":"/tmp/images"}"#).unwrap();
+            let runner = Arc::new(Fake {
+                active_alias: Some("lan".into()),
+                config_update: Some((path.clone(), replacement.to_vec())),
+                ..Fake::default()
+            });
+            let ctx = context(home.path(), runner.clone());
+            assert!(format!("{:#}", setup(&ctx, &path).unwrap_err()).contains("SSH destination changed"));
+            assert_eq!(fs::read(&path).unwrap(), replacement);
+            assert!(runner.calls.lock().unwrap().iter().all(|call| call.args.last().is_none_or(|arg| !arg.to_string_lossy().ends_with(" shell install"))));
+        }
+    }
+
+    #[test]
+    fn remote_management_selects_active_alias_or_primary_without_network_failover() {
+        type Operation = fn(&Context, &Path) -> Result<String>;
+        for active in [None, Some("lan")] {
+            for operation in [doctor as Operation, status, stop] {
+                let home = tempfile::tempdir().unwrap();
+                let path = home.path().join("config.json");
+                let mut config = Config::new("primary", "/tmp/images").unwrap();
+                config.ssh_aliases = vec!["lan".into()];
+                config.save(&path).unwrap();
+                let runner = Arc::new(Fake {
+                    active_alias: active.map(str::to_owned),
+                    ..Fake::default()
+                });
+                let ctx = context(home.path(), runner.clone());
+                operation(&ctx, &path).unwrap();
+                let calls = runner.calls.lock().unwrap();
+                let ssh: Vec<_> = calls
+                    .iter()
+                    .filter(|call| call.program == Path::new("/usr/bin/ssh"))
+                    .collect();
+                assert_eq!(ssh.len(), 1);
+                assert_eq!(
+                    ssh[0].args[ssh[0].args.len() - 2],
+                    active.unwrap_or("primary")
+                );
+            }
         }
     }
 

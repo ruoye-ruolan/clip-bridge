@@ -22,6 +22,9 @@ pub const SSH_OPTIONS: &[&str] = &[
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Config {
     pub ssh_host: String,
+    /// Alternative SSH aliases for the same remote machine and account.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ssh_aliases: Vec<String>,
     pub remote_directory: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub remote_clipboard: bool,
@@ -34,6 +37,7 @@ impl Config {
     pub fn new(host: impl Into<String>, remote: impl Into<String>) -> Result<Self> {
         let mut config = Self {
             ssh_host: host.into(),
+            ssh_aliases: Vec::new(),
             remote_directory: remote.into(),
             remote_clipboard: false,
         };
@@ -45,7 +49,13 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
-        validate_host(&self.ssh_host)?;
+        let mut seen = HashSet::new();
+        for host in self.ssh_hosts() {
+            validate_host(host)?;
+            if !seen.insert(host) {
+                bail!("duplicate SSH alias: {host}");
+            }
+        }
         let remote = &self.remote_directory;
         if !remote.starts_with('/')
             || !remote
@@ -66,8 +76,26 @@ impl Config {
         )
         .with_context(|| format!("invalid JSON configuration {}", path.display()))?;
         let mut normalized = Self::new(config.ssh_host, config.remote_directory)?;
+        normalized.ssh_aliases = config.ssh_aliases;
         normalized.remote_clipboard = config.remote_clipboard;
+        normalized.validate()?;
         Ok(normalized)
+    }
+    pub fn ssh_hosts(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.ssh_host.as_str()).chain(self.ssh_aliases.iter().map(String::as_str))
+    }
+    pub fn allows_host(&self, host: &str) -> bool {
+        self.ssh_hosts().any(|allowed| allowed == host)
+    }
+    /// Create a single-route configuration; later operations must not reselect it.
+    pub fn for_host(&self, host: &str) -> Result<Self> {
+        self.validate()?;
+        if !self.allows_host(host) {
+            bail!("SSH alias is not configured: {host}");
+        }
+        let mut selected = Self::new(host, &self.remote_directory)?;
+        selected.remote_clipboard = self.remote_clipboard;
+        Ok(selected)
     }
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
@@ -124,19 +152,27 @@ pub fn resolve_remote_directory(ctx: &Context, host: &str) -> Result<String> {
         home.trim_end_matches('/')
     ))
 }
-pub fn destination_command(remote: &str, create: bool) -> String {
+/// Pin subsequent relative operations to a directory no other user can modify.
+/// Works with GNU and BSD find; existing directory permissions are never changed.
+pub(crate) fn directory_guard(remote: &str, create: bool) -> String {
     let quoted = shell_quote(remote);
-    let check = format!("test -d {quoted} && test -w {quoted} && test -x {quoted}");
-    if !create {
-        return check;
-    }
-    let probe = shell_quote(&format!(
-        "{}/.clipbridge-check.XXXXXXXX",
-        remote.trim_end_matches('/')
-    ));
+    let mkdir = if create {
+        format!("umask 077\nmkdir -p -- {quoted}\n")
+    } else {
+        String::new()
+    };
     format!(
-        "umask 077; mkdir -p -- {quoted} && {check} && probe=$(mktemp {probe}) && trap 'rm -f -- \"$probe\"' 0 HUP INT TERM"
+        "{mkdir}cd -P -- {quoted}\n\
+         [ -w . ] && [ -x . ] || {{ printf '%s\\n' 'Remote directory must be writable and searchable by the SSH user' >&2; exit 1; }}\n\
+         [ \"$(find . -prune -type d -user \"$(id -u)\" ! -perm -020 ! -perm -002 -print)\" = . ] || {{ printf '%s\\n' 'Remote directory must be owned by the SSH user and not writable by group or others' >&2; exit 1; }}\n"
     )
+}
+pub fn destination_command(remote: &str, create: bool) -> String {
+    let mut script = format!("set -eu\n{}", directory_guard(remote, create));
+    if create {
+        script.push_str("probe=$(mktemp .clipbridge-check.XXXXXXXX)\ntrap 'rm -f -- \"$probe\"' EXIT\ntrap 'exit 1' HUP INT TERM\n");
+    }
+    format!("sh -c {}", shell_quote(&script))
 }
 pub fn check_destination(
     ctx: &Context,
@@ -317,6 +353,7 @@ mod tests {
         );
         let bad = Config {
             ssh_host: "-bad".into(),
+            ssh_aliases: Vec::new(),
             remote_directory: "/tmp".into(),
             remote_clipboard: false,
         };
@@ -334,6 +371,7 @@ mod tests {
         .unwrap();
         let mut config = Config::load(&file).unwrap();
         assert!(!config.remote_clipboard);
+        assert!(config.ssh_aliases.is_empty());
         config.save(&file).unwrap();
         assert!(
             !fs::read_to_string(&file)
@@ -350,6 +388,45 @@ mod tests {
         )
         .unwrap();
         assert!(Config::load(&file).is_err());
+    }
+    #[test]
+    fn alternative_aliases_survive_normalization_and_pin_only_authorized_routes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        fs::write(&path, br#"{"ssh_host":"server","ssh_aliases":["server.local","server-lan"],"remote_directory":"/tmp/images/","remote_clipboard":true}"#).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.remote_directory, "/tmp/images");
+        assert_eq!(
+            config.ssh_hosts().collect::<Vec<_>>(),
+            ["server", "server.local", "server-lan"]
+        );
+        config.save(&path).unwrap();
+        assert_eq!(Config::load(&path).unwrap(), config);
+        let selected = config.for_host("server.local").unwrap();
+        assert_eq!(selected.ssh_host, "server.local");
+        assert!(selected.ssh_aliases.is_empty());
+        assert_eq!(selected.remote_directory, config.remote_directory);
+        assert!(selected.remote_clipboard);
+        assert!(config.for_host("unconfigured").is_err());
+    }
+    #[test]
+    fn invalid_or_duplicate_alternative_aliases_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        for aliases in [
+            serde_json::json!(["server"]),
+            serde_json::json!(["lan", "lan"]),
+            serde_json::json!(["-option"]),
+            serde_json::json!(["user@server"]),
+            serde_json::json!(["server;touch sentinel"]),
+            serde_json::json!(["2001:db8::1"]),
+            serde_json::json!("server.local"),
+            serde_json::json!(null),
+        ] {
+            let value = serde_json::json!({"ssh_host":"server","ssh_aliases":aliases,"remote_directory":"/tmp/images"});
+            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(Config::load(&path).is_err(), "accepted {value}");
+        }
     }
     #[test]
     fn includes_are_hints_and_cycles_do_not_recurse_forever() {
@@ -407,5 +484,46 @@ mod tests {
                 .to_string_lossy()
                 .contains("mkdir")
         );
+    }
+    #[test]
+    fn destination_checks_share_safe_permissions_and_leave_existing_files_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("images");
+        let run = |create| {
+            std::process::Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    &destination_command(destination.to_str().unwrap(), create),
+                ])
+                .output()
+                .unwrap()
+        };
+        assert!(!run(false).status.success());
+        assert!(!destination.exists(), "doctor must remain read-only");
+        assert!(run(true).status.success());
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let original = destination.join("existing");
+        fs::write(&original, b"keep").unwrap();
+        for mode in [0o700, 0o755, 0o775, 0o777] {
+            fs::set_permissions(&destination, fs::Permissions::from_mode(mode)).unwrap();
+            for create in [false, true] {
+                let output = run(create);
+                assert_eq!(
+                    output.status.success(),
+                    mode & 0o022 == 0,
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(
+                    fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+                    mode
+                );
+                assert_eq!(fs::read(&original).unwrap(), b"keep");
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+            }
+        }
     }
 }

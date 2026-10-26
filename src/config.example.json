@@ -1,4 +1,5 @@
 {
   "ssh_host": "dev-server",
+  "ssh_aliases": [],
   "remote_directory": "/home/example/.local/share/clipbridge/images"
 }

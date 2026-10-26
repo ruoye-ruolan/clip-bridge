@@ -1,14 +1,22 @@
 # Image Paste in Local and SSH CLIs
 
-Last updated: 2026-10-03.
+Last updated: 2026-10-24.
 
-ClipBridge 0.3.1 leaves the Mac clipboard unchanged. Local applications continue receiving the original image. For an SSH CLI, enable the Linux companion and reconnect SSH once to load its Bash/Zsh integration. Then run `codex` or `claude` normally. The companion provides a private X11 image clipboard without changing Ghostty shortcuts or inserting a file path into the terminal.
+ClipBridge 0.3.3 leaves the Mac clipboard unchanged. Local applications continue receiving the original image. For an SSH CLI, enable the Linux companion and reconnect SSH once to load its Bash/Zsh integration. Then run `codex` or `claude` normally. The companion provides a private X11 image clipboard without changing Ghostty shortcuts or inserting a file path into the terminal.
 
 Versions before 0.3 replaced the Mac clipboard with an uploaded file path, which terminal text paste could transmit directly. Image paste needs the remote CLI to read actual image data. Version 0.3 introduced an explicit launch wrapper to supply that connection; 0.3.1 invokes it automatically through shell integration.
 
 The implementation and isolated regression tests are available. The real X11 image path has also been verified on WSL2; full attachment rendering and shortcut delivery in actual Ghostty, Codex and Claude Code sessions still need acceptance testing. CLI versions must support reading an image from the supplied Linux clipboard.
 
+Mac 0.3.2 added alternative SSH aliases. Mac 0.3.3 streams each image and publishes it in one SSH request, with private connection reuse for subsequent images. The Linux companion remains 0.3.1; an existing compatible companion does not need reinstallation for these updates.
+
 ## Validation Record
+
+On 2026-10-24, Mac toolkit 0.3.3 and companion 0.3.1 passed 148 automated tests, formatting and Clippy checks. A 262,548-byte synthetic PNG was transferred to a private WSL2 test directory: the old three-connection path took 17.904 seconds on its successful trial and timed out on another; the streamed path took 5.511 seconds for its first connection and 1.910 / 2.560 seconds when reused. This was a small, network-dependent transport comparison: publication was disabled for the new path, and the old path used a read-only helper status call as its final step. It does not measure clipboard publication or CLI rendering. All four successful files matched the source SHA-256 and were removed afterward.
+
+A separate same-user process read a synthetic file through the uploader's procfs working-directory reference before and after a directory rename on WSL2. No real clipboard or model prompt was used in these checks.
+
+On 2026-10-12, the Mac toolkit 0.3.2 and unchanged companion 0.3.1 passed 126 automated tests plus formatting and Clippy checks. Multi-alias tests cover route selection, consistent upload/publication routing, disconnect handling without reassignment, and configuration changes during setup.
 
 On 2026-09-30, both crates passed 104 automated tests, formatting and Clippy checks. On a WSL2 Linux host, a separate private Xvfb backend advertised `image/png`, and three xclip reads returned the synthetic PNG byte-for-byte. A temporary Rust probe using arboard 3.6.1 also read and decoded the same 1×1 RGBA image correctly three times with `WAYLAND_DISPLAY` unset. The temporary backend, image and remote probe files were removed afterward.
 
@@ -22,7 +30,10 @@ On the configured SSH host, provide:
 
 - Rust 1.94+, Cargo and a native linker for companion installation/upgrades.
 - `xvfb-run`, `Xvfb`, `xauth` and `xclip` for operation.
+- Standard shell utilities and an accessible Linux `/proc` filesystem for image publication.
 - The CLI you want to run, such as `codex` or `claude`.
+
+Choose an image directory owned and writable by the SSH account, with no group/other write permission. Uploads create a missing directory privately, but preserve an existing directory's permissions and refuse an unsafe destination. See [destination configuration](usage.md#configure-the-destination).
 
 The Mac also needs Rust 1.94+ and Cargo for `remote setup`, even when the Mac executable is already installed. Setup uses the Mac's Cargo cache/configuration to prepare locked dependencies; the Mac needs registry access if they are not cached. It transfers those dependencies with the source, allowing the remote build to run without crates.io access. Normal monitoring and companion operation need no Rust toolchain on either host.
 
@@ -72,7 +83,7 @@ After the first setup, exit existing CLI processes and reconnect SSH once. In Gh
 ssh dev-server
 ```
 
-Replace the alias with your configured `ssh_host`. Run the desired command **inside that remote shell**:
+Replace the alias with your configured `ssh_host` or an entry in `ssh_aliases`. All listed aliases must reach the same machine and account; see [multiple network routes](usage.md#multiple-network-routes). Run the desired command **inside that remote shell**:
 
 ```sh
 codex
@@ -142,6 +153,8 @@ An upload path in the log is the remote file's storage location. The companion r
 
 Remote publication is asynchronous. The private clipboard holds the last successfully published image, so pasting before the ready message can paste an older image. Copying text on the Mac does not clear the remote image. All applications launched through the integration or wrapper for the same remote user share that private clipboard. A failed publication retains a local copy and reports the failure; the previous remote image may remain available.
 
+The first transfer still needs a connection; later images can reuse it within the 60-second idle window. Logs record capture-to-completion time, including queue wait and publication. See [transfer speed](usage.md#transfer-speed) for the remaining delays and network-change behavior. Transfer completion is reported only after the received byte count is verified and the remote file is finalized; remote readiness additionally requires successful publication.
+
 ## Troubleshooting
 
 Run these commands on the Mac:
@@ -153,6 +166,8 @@ clipbridge logs --follow
 ```
 
 `remote doctor` checks remote dependencies; ordinary `doctor` checks the SSH destination. `remote status` does not start the backend. A freshly set-up companion can correctly report stopped until its first publication or integrated application launch starts it. After the backend has been stopped/restarted, exit and relaunch the CLI so it receives the current display settings, then copy a new image. A new integrated launch refreshes the connection automatically.
+
+`remote` commands use one selected route for the entire operation: the preferred matching interactive session, or the primary `ssh_host` when none is detected. They print that alias and do not probe alternatives on failure. After changing networks, close stale SSH sessions and reconnect through a working configured alias, then copy a new image.
 
 If attachments do not appear, confirm the following:
 

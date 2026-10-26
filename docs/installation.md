@@ -1,14 +1,14 @@
 # Installation, Upgrade and Removal
 
-Last updated: 2026-10-03.
+Last updated: 2026-10-24.
 
-ClipBridge 0.3.1 uses a native Rust executable. It installs into your user account without `sudo`, independently of the original checkout or extracted source package. Optional remote image paste uses a separately deployed Rust companion on the Linux/WSL host.
+ClipBridge 0.3.3 uses a native Rust executable. It installs into your user account without `sudo`, independently of the original checkout or extracted source package. Optional remote image paste uses a separately deployed Rust companion on the Linux/WSL host.
 
 ## Requirements
 
 Building, installing from source and upgrading from source require macOS, Rust 1.94+ with Cargo, and the linker/SDK supplied by Xcode or Apple Command Line Tools. Install missing Apple tools with `xcode-select --install`. Cargo may download the dependencies recorded in `Cargo.lock` on the first build.
 
-Normal installed operation does not need Python, Swift, Rust or Cargo. The executable calls macOS system tools, including SSH/SCP and launchctl, and accesses the clipboard through AppKit. A graphical login session is required for monitoring. The source installer builds for the current Mac; precompiled cross-machine release archives are not provided yet.
+Normal installed operation does not need Python, Swift, Rust or Cargo. The executable calls macOS system tools, including SSH and launchctl, and accesses the clipboard through AppKit. SCP remains required for remote companion setup; clipboard images stream through SSH. The remote host needs the usual POSIX shell and file utilities, including `mktemp`, `cat`, `wc` and `mv`. A graphical login session is required for monitoring. The source installer builds for the current Mac; precompiled cross-machine release archives are not provided yet.
 
 Remote companion setup requires Rust 1.94+/Cargo on both the Mac and Linux host, plus a native linker on Linux. Cargo vendors locked dependencies on the Mac; the source and dependencies are uploaded together and built remotely with `--frozen`, without remote registry access. The Mac needs registry access or already cached dependencies. Normal operation needs no Rust toolchain on either host; the Linux companion requires Xvfb, xauth and xclip. Follow [remote image setup](remote-images.md); the Mac installer does not install remote system packages.
 
@@ -92,6 +92,10 @@ The upgrade compiles the selected new source, then invokes that version's instal
 Version 0.3 preserves Mac clipboard images instead of replacing them with remote paths. Existing JSON remains valid; remote publication defaults to disabled. Run `clipbridge remote setup` and then `clipbridge restart` when adopting remote image paste.
 
 Version 0.3.1 adds remote Bash/Zsh integration: after `remote setup`, reconnect SSH once and run `codex` or `claude` normally. Setup adds a managed startup block and preserves existing aliases/functions. Use `clipbridge remote setup --no-shell` to skip that integration; this flag does not remove an existing hook. See [shell integration](remote-images.md#start-the-remote-cli) for custom shells and removal.
+
+Version 0.3.2 adds optional `ssh_aliases` for different routes to the same server. Existing JSON remains valid. Add alternatives as described in [multiple network routes](usage.md#multiple-network-routes), then reload monitoring. This Mac update retains the compatible 0.3.1 companion, so an existing companion installation does not need setup again.
+
+Version 0.3.3 combines image transfer and publication into one SSH request and privately reuses upload connections for up to 60 seconds of inactivity. The configuration format remains compatible, and the companion is still 0.3.1. The remote destination must now be owned by the SSH user and must not be group/other-writable; existing permissions are not changed automatically. Use a dedicated directory under the remote account when migrating from a shared location. Upgrade the Mac installation normally; a compatible companion does not need reinstallation for this performance change.
 
 After upgrades that change the companion, rerun `remote setup`. If it detects an incompatible running backend, explicitly run `clipbridge remote stop`, repeat setup and relaunch remote CLIs. Companion deployment does not transparently replace a running backend and is separate from the Mac installer's versioned recovery process.
 

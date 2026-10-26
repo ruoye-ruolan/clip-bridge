@@ -1,10 +1,12 @@
 # ClipBridge
 
-Last updated: 2026-10-03.
+Last updated: 2026-10-24.
 
 Copy an image on your Mac and keep pasting it as an image locally. ClipBridge uploads a copy over SSH and can make it available to a remote CLI through a private Linux image clipboard.
 
-ClipBridge 0.3.1 is implemented in Rust, including native macOS clipboard access and the optional Linux companion. The installed Mac program is one native executable with no language runtime requirement. Remote image pasting additionally needs Xvfb, xauth and xclip on the SSH host; see [remote image setup](docs/remote-images.md).
+ClipBridge 0.3.3 is implemented in Rust, including native macOS clipboard access. It remains compatible with the unchanged 0.3.1 Linux companion. The installed Mac program is one native executable with no language runtime requirement. Remote image pasting additionally needs Xvfb, xauth and xclip on the SSH host; see [remote image setup](docs/remote-images.md).
+
+Image transfer and remote publication now use one SSH request. Subsequent images can reuse a private connection until it has been idle for 60 seconds, reducing repeated handshakes on public networks. See [transfer speed](docs/usage.md#transfer-speed) for timing and connection limits.
 
 ## Install or Migrate from Python 0.1
 
@@ -31,7 +33,9 @@ Edit `~/.config/clipbridge/config.json`. Installation preserves an existing file
 }
 ```
 
-Replace both values. `ssh_host` is your SSH alias, with noninteractive authentication and a verified host key. `remote_directory` is a required absolute path on that remote host; uploads attempt to create it if needed.
+Replace both values. `ssh_host` is your SSH alias, with noninteractive authentication and a verified host key. `remote_directory` is a required absolute path owned and writable by that SSH user, with no group/other write permission; uploads attempt to create it privately if needed.
+
+For the same server reached through different network addresses, add its other SSH aliases with `ssh_aliases`; see [multiple network routes](docs/usage.md#multiple-network-routes). ClipBridge uses an existing matching session and does not reconnect SSH automatically.
 
 Keep a matching interactive `ssh YOUR_ALIAS` session open, then:
 

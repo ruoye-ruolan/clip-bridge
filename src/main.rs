@@ -228,6 +228,9 @@ fn configure(
     new.remote_clipboard = previous
         .as_ref()
         .is_some_and(|old| old.ssh_host == new.ssh_host && old.remote_clipboard);
+    if let Some(old) = previous.as_ref().filter(|old| old.ssh_host == new.ssh_host) {
+        new.ssh_aliases.clone_from(&old.ssh_aliases);
+    }
     if ctx.cancelled.load(Ordering::SeqCst) {
         bail!("setup cancelled");
     }
@@ -281,17 +284,20 @@ fn doctor(ctx: &Context, path: &Path) -> Result<()> {
             legacy.join(", ")
         );
     }
-    config::check_destination(ctx, &config.ssh_host, Some(&config.remote_directory), false)?;
+    let active = monitor::active_host(ctx, &config);
+    let host = active.as_deref().unwrap_or(&config.ssh_host);
+    println!("SSH route: {host}");
+    config::check_destination(ctx, host, Some(&config.remote_directory), false)?;
     println!(
         "Configuration: {}\nSSH authentication and destination permissions: OK",
         path.display()
     );
-    if monitor::connected(ctx, &config.ssh_host) {
-        println!("Matching SSH session detected (process/socket heuristic).");
+    if active.is_some() {
+        println!("Matching SSH session detected: {host} (process/socket heuristic).");
     } else {
         println!(
-            "Waiting for a matching interactive SSH session; open: ssh {}",
-            config.ssh_host
+            "Waiting for a matching interactive SSH session. Configured aliases: {}",
+            config.ssh_hosts().collect::<Vec<_>>().join(", ")
         );
     }
     println!("Doctor finished. No monitoring was started.");
@@ -506,12 +512,21 @@ mod tests {
             let path = ctx.default_config();
             let mut initial = Config::new("original", "/tmp/original").unwrap();
             initial.remote_clipboard = true;
+            initial.ssh_aliases = vec!["original.local".into()];
             initial.save(&path).unwrap();
             configure(&ctx, None, Some(host.into()), Some("/tmp/new".into()), true).unwrap();
             let saved = Config::load(&path).unwrap();
             assert_eq!(saved.ssh_host, host);
             assert_eq!(saved.remote_directory, "/tmp/new");
             assert_eq!(saved.remote_clipboard, host == "original");
+            assert_eq!(
+                saved.ssh_aliases,
+                if host == "original" {
+                    vec!["original.local".to_owned()]
+                } else {
+                    Vec::new()
+                }
+            );
         }
     }
 

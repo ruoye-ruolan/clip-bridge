@@ -6,3 +6,4 @@ pub mod installer;
 pub mod monitor;
 pub mod remote;
 pub mod service;
+pub mod transport;

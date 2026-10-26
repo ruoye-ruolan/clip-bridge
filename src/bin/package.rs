@@ -17,6 +17,7 @@ const RUST_FILES: &[&str] = &[
     "src/service.rs",
     "src/installer.rs",
     "src/remote.rs",
+    "src/transport.rs",
     "src/bin/package.rs",
     "tests/cli.rs",
     "tests/installation.rs",

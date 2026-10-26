@@ -1,5 +1,5 @@
 //! OS boundaries and private file primitives shared by the Rust application.
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, bail, ensure};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
@@ -19,6 +19,12 @@ pub const INSTALL_MARKER: &str = ".clipbridge-install.json";
 pub const RELEASE_MARKER: &str = ".clipbridge-release.json";
 
 #[derive(Clone, Debug)]
+pub struct StdinFile {
+    pub path: PathBuf,
+    pub expected_len: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct CommandSpec {
     pub program: PathBuf,
     pub args: Vec<OsString>,
@@ -27,6 +33,7 @@ pub struct CommandSpec {
     pub cancellable: bool,
     pub cooperative_cancel: bool,
     pub cwd: Option<PathBuf>,
+    pub stdin_file: Option<StdinFile>,
 }
 impl CommandSpec {
     pub fn new(program: impl AsRef<OsStr>) -> Self {
@@ -38,6 +45,7 @@ impl CommandSpec {
             cancellable: true,
             cooperative_cancel: false,
             cwd: None,
+            stdin_file: None,
         }
     }
     pub fn args<I, S>(mut self, args: I) -> Self
@@ -55,6 +63,13 @@ impl CommandSpec {
     }
     pub fn current_dir(mut self, directory: impl AsRef<Path>) -> Self {
         self.cwd = Some(directory.as_ref().to_owned());
+        self
+    }
+    pub fn stdin_file(mut self, path: impl AsRef<Path>, expected_len: u64) -> Self {
+        self.stdin_file = Some(StdinFile {
+            path: path.as_ref().to_owned(),
+            expected_len,
+        });
         self
     }
     pub fn cooperative(mut self) -> Self {
@@ -109,6 +124,22 @@ impl Runner for SystemRunner {
             .stderr(Stdio::piped());
         if let Some(directory) = &spec.cwd {
             command.current_dir(directory);
+        }
+        if let Some(input) = &spec.stdin_file {
+            // Open once, then validate and pass this same descriptor to the child.
+            // O_NONBLOCK avoids hanging if a source was replaced with a FIFO.
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+                .open(&input.path)
+                .with_context(|| format!("could not open input {}", input.path.display()))?;
+            let metadata = file.metadata()?;
+            ensure!(metadata.is_file(), "command input must be a regular file");
+            ensure!(
+                metadata.len() == input.expected_len,
+                "command input size changed before transfer"
+            );
+            command.stdin(Stdio::from(file));
         }
         let mut child = command
             .spawn()
@@ -401,6 +432,7 @@ pub fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
     #[test]
     fn lock_is_single_owner_and_never_unlinks_inode() {
         let dir = tempfile::tempdir().unwrap();
@@ -485,5 +517,76 @@ mod tests {
         trigger.join().unwrap();
         assert_eq!(output.code, 0);
         assert_eq!(output.stdout, "cleaned");
+    }
+
+    #[test]
+    fn file_stdin_streams_large_input_without_a_writer_thread() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.bin");
+        let data = vec![0xab; 2 * 1024 * 1024 + 7];
+        fs::write(&path, &data).unwrap();
+        let output = SystemRunner
+            .run(
+                &CommandSpec::new("/usr/bin/wc")
+                    .args(["-c"])
+                    .stdin_file(&path, data.len() as u64),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(output.code, 0);
+        assert_eq!(output.stdout.trim(), data.len().to_string());
+        assert_eq!(fs::read(path).unwrap(), data);
+    }
+
+    #[test]
+    fn file_stdin_rejects_symlinks_devices_and_size_changes_before_spawning() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original");
+        fs::write(&original, b"abc").unwrap();
+        let alias = directory.path().join("alias");
+        symlink(&original, &alias).unwrap();
+        let fifo = directory.path().join("fifo");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRUSR).unwrap();
+        let marker = directory.path().join("spawned");
+        for (path, expected_len) in [
+            (alias.as_path(), 3),
+            (directory.path(), 0),
+            (Path::new("/dev/null"), 0),
+            (fifo.as_path(), 0),
+            (original.as_path(), 4),
+        ] {
+            let started = Instant::now();
+            let result = SystemRunner.run(
+                &CommandSpec::new("/bin/sh")
+                    .args([
+                        "-c",
+                        &format!("touch {}", shell_quote(&marker.to_string_lossy())),
+                    ])
+                    .stdin_file(path, expected_len),
+                &AtomicBool::new(false),
+            );
+            assert!(result.is_err(), "accepted {}", path.display());
+            assert!(!marker.exists());
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
+    }
+
+    #[test]
+    fn file_stdin_keeps_deadlines_and_cancellation_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.bin");
+        fs::write(&path, vec![0_u8; 1024 * 1024]).unwrap();
+        for cancelled in [false, true] {
+            let started = Instant::now();
+            let result = SystemRunner.run(
+                &CommandSpec::new("/bin/sh")
+                    .args(["-c", "sleep 8"])
+                    .stdin_file(&path, 1024 * 1024)
+                    .timeout(1),
+                &AtomicBool::new(cancelled),
+            );
+            assert!(result.is_err());
+            assert!(started.elapsed() < Duration::from_secs(3));
+        }
     }
 }
