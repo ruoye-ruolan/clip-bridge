@@ -1,7 +1,12 @@
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -118,6 +123,139 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         // Every fake server is isolated; cleanup never addresses the user's normal state path.
         let _ = self.command().arg("stop").output();
+    }
+}
+
+/// Serve the existing protocol without launching Xvfb or replacing any clipboard.
+struct VersionedBackend {
+    _lock: fs::File,
+    stop: Option<mpsc::Sender<()>>,
+    worker: Option<thread::JoinHandle<Vec<String>>>,
+}
+
+impl VersionedBackend {
+    fn new(fixture: &Fixture, version: &str) -> Self {
+        fs::create_dir(&fixture.state).unwrap();
+        fs::set_permissions(&fixture.state, fs::Permissions::from_mode(0o700)).unwrap();
+        let authority = fixture.state.join("authority");
+        fs::write(&authority, b"private cookie").unwrap();
+        fs::set_permissions(&authority, fs::Permissions::from_mode(0o600)).unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(fixture.state.join("server.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        let socket = fixture.state.join("control.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        fs::set_permissions(socket, fs::Permissions::from_mode(0o600)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut response = serde_json::to_vec(&serde_json::json!({
+            "ok": true,
+            "version": version,
+            "environment": {"display": ":90", "xauthority": authority},
+            "image_ready": true
+        }))
+        .unwrap();
+        response.push(b'\n');
+        let (stop, stopped) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut requests = Vec::new();
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let mut line = String::new();
+                        BufReader::new(&stream).read_line(&mut line).unwrap();
+                        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        requests.push(request["command"].as_str().unwrap().to_owned());
+                        stream.write_all(&response).unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if !matches!(
+                            stopped.recv_timeout(Duration::from_millis(10)),
+                            Err(mpsc::RecvTimeoutError::Timeout)
+                        ) {
+                            break;
+                        }
+                    }
+                    Err(error) => panic!("accept fake backend request: {error}"),
+                }
+            }
+            requests
+        });
+        Self {
+            _lock: lock,
+            stop: Some(stop),
+            worker: Some(worker),
+        }
+    }
+
+    fn finish(mut self) -> Vec<String> {
+        self.stop.take();
+        self.worker.take().unwrap().join().unwrap()
+    }
+}
+
+impl Drop for VersionedBackend {
+    fn drop(&mut self) {
+        self.stop.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[test]
+fn compatible_legacy_backend_supports_status_run_and_publish_without_restart() {
+    let fixture = Fixture::new();
+    let backend = VersionedBackend::new(&fixture, "0.3.1");
+    assert!(
+        fixture
+            .success(&["status"])
+            .contains("0.3.1 is running; image ready")
+    );
+    let output = fixture.success(&[
+        "run", "--", "/bin/sh", "-c",
+        "printf '%s\\n' \"$DISPLAY\" \"$XAUTHORITY\" \"${WAYLAND_DISPLAY-unset}\" \"$XDG_SESSION_TYPE\"",
+    ]);
+    assert_eq!(
+        output,
+        format!(
+            ":90\n{}\nunset\nx11\n",
+            fixture.state.join("authority").display()
+        )
+    );
+    let image = fixture.image("legacy.png", b"unchanged protocol");
+    assert_eq!(
+        fixture.success(&["publish", image.to_str().unwrap()]),
+        "Image ready on the remote clipboard.\n"
+    );
+    assert_eq!(backend.finish(), ["status", "status", "status", "publish"]);
+    assert!(
+        !fixture.state.join("starts").exists(),
+        "compatible backend must be reused"
+    );
+}
+
+#[test]
+fn unknown_backend_versions_are_rejected_without_modifying_server_state() {
+    for version in ["0.3.0", "0.3.3", "9.0.0", "0.3.1-custom"] {
+        let fixture = Fixture::new();
+        let backend = VersionedBackend::new(&fixture, version);
+        let result = fixture.run(&["status"]);
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("remote server version"));
+        assert!(fixture.state.join("control.sock").exists());
+        assert_eq!(backend.finish(), ["status"]);
+        assert!(!fixture.state.join("starts").exists());
     }
 }
 

@@ -3,6 +3,30 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+// Exact managed snippet shipped by companion 0.3.1, independent of current output.
+const LEGACY_SNIPPET: &str = r#"# Managed by clipbridge-remote shell install. Do not edit.
+case $- in
+    *i*)
+        if [ "${_CLIPBRIDGE_CODEX_WRAPPED-}" != 1 ]; then
+            if alias codex >/dev/null 2>&1 || typeset -f codex >/dev/null 2>&1; then
+                printf '%s\n' 'ClipBridge: keeping your existing codex alias/function; use clipbridge-remote run -- codex explicitly.' >&2
+            else
+                function codex { "$HOME/.local/bin/clipbridge-remote" run -- codex "$@"; }
+                _CLIPBRIDGE_CODEX_WRAPPED=1
+            fi
+        fi
+        if [ "${_CLIPBRIDGE_CLAUDE_WRAPPED-}" != 1 ]; then
+            if alias claude >/dev/null 2>&1 || typeset -f claude >/dev/null 2>&1; then
+                printf '%s\n' 'ClipBridge: keeping your existing claude alias/function; use clipbridge-remote run -- claude explicitly.' >&2
+            else
+                function claude { "$HOME/.local/bin/clipbridge-remote" run -- claude "$@"; }
+                _CLIPBRIDGE_CLAUDE_WRAPPED=1
+            fi
+        fi
+        ;;
+esac
+"#;
+
 struct Fixture {
     root: tempfile::TempDir,
 }
@@ -22,6 +46,7 @@ impl Fixture {
             "bin/claude",
             "#!/bin/sh\nprintf 'claude:%s\\n' \"$@\"\nexit 29\n",
         );
+        fixture.script("bin/opencode", "#!/bin/sh\nprintf 'opencode:%s:%s:%s\\n' \"$DISPLAY\" \"$XAUTHORITY\" \"${WAYLAND_DISPLAY-unset}\"\nprintf 'arg:%s\\n' \"$@\"\nexit 31\n");
         fixture
     }
 
@@ -88,6 +113,7 @@ impl Fixture {
             .env_remove("ZDOTDIR")
             .env_remove("_CLIPBRIDGE_CODEX_WRAPPED")
             .env_remove("_CLIPBRIDGE_CLAUDE_WRAPPED")
+            .env_remove("_CLIPBRIDGE_OPENCODE_WRAPPED")
             .output()
             .unwrap()
     }
@@ -107,7 +133,7 @@ fn wrappers_preserve_arguments_status_parent_environment_and_return_to_bash_and_
     fixture.success(&["shell", "install"]);
     for shell in ["bash", "zsh"] {
         let script = format!(
-            ". {}; . {}; codex 'two words' 'literal $(false)' \"quote'\\\"\"; printf 'status:%s\\n' \"$?\"; claude 'hello world'; printf 'status:%s\\n' \"$?\"; printf 'parent:%s:%s:%s\\n' \"$DISPLAY\" \"$XAUTHORITY\" \"$WAYLAND_DISPLAY\"",
+            ". {}; . {}; codex 'two words' 'literal $(false)' \"quote'\\\"\"; printf 'status:%s\\n' \"$?\"; claude 'hello world'; printf 'status:%s\\n' \"$?\"; opencode '--session' 'two words' 'literal $(false)' \"quote'\\\"\"; printf 'status:%s\\n' \"$?\"; printf 'parent:%s:%s:%s\\n' \"$DISPLAY\" \"$XAUTHORITY\" \"$WAYLAND_DISPLAY\"",
             quote(&fixture.snippet()),
             quote(&fixture.snippet())
         );
@@ -119,7 +145,7 @@ fn wrappers_preserve_arguments_status_parent_environment_and_return_to_bash_and_
         );
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
-            "child::99:/private/cookie:unset\narg:two words\narg:literal $(false)\narg:quote'\"\nstatus:23\nclaude:hello world\nstatus:29\nparent::12:/original/cookie:wayland-personal\n",
+            "child::99:/private/cookie:unset\narg:two words\narg:literal $(false)\narg:quote'\"\nstatus:23\nclaude:hello world\nstatus:29\nopencode::99:/private/cookie:unset\narg:--session\narg:two words\narg:literal $(false)\narg:quote'\"\nstatus:31\nparent::12:/original/cookie:wayland-personal\n",
             "{shell}"
         );
         assert!(!String::from_utf8_lossy(&output.stderr).contains("ClipBridge:"));
@@ -148,10 +174,107 @@ fn existing_aliases_and_functions_are_preserved_and_noninteractive_source_is_ine
         assert!(stderr.contains("existing codex alias/function"));
         assert!(stderr.contains("existing claude alias/function"));
         let script = format!(
-            ". {}; typeset -f codex >/dev/null && exit 9; typeset -f claude >/dev/null && exit 9; exit 0",
+            ". {}; typeset -f codex >/dev/null && exit 9; typeset -f claude >/dev/null && exit 9; typeset -f opencode >/dev/null && exit 9; exit 0",
             quote(&fixture.snippet())
         );
         assert!(fixture.shell(shell, &script, false).status.success());
+    }
+}
+
+#[test]
+fn opencode_aliases_and_functions_are_preserved_in_bash_and_zsh() {
+    let fixture = Fixture::new();
+    fixture.success(&["shell", "install"]);
+    for shell in ["bash", "zsh"] {
+        for (definition, inspect) in [
+            (
+                "alias opencode='printf opencode-alias-kept'",
+                "alias opencode",
+            ),
+            (
+                "function opencode { printf opencode-function-kept; }",
+                "opencode",
+            ),
+        ] {
+            let script = format!("{definition}; . {}; {inspect}", quote(&fixture.snippet()));
+            let output = fixture.shell(shell, &script, true);
+            assert!(output.status.success());
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains("opencode-alias-kept") || stdout.contains("opencode-function-kept")
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("existing opencode alias/function")
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_snippet_upgrades_without_rewriting_startup_files_and_can_be_reloaded() {
+    let fixture = Fixture::new();
+    let rc = fixture.path(".zshrc");
+    let original = b"# user settings without final newline";
+    fs::write(&rc, original).unwrap();
+    fixture.success(&["shell", "install"]);
+    fs::write(fixture.snippet(), LEGACY_SNIPPET).unwrap();
+    let rc_before = fs::read(&rc).unwrap();
+    let manifest_path = fixture.snippet().parent().unwrap().join("manifest.json");
+    let manifest_before = fs::read(&manifest_path).unwrap();
+    let legacy_path = fixture.path("legacy-init.sh");
+    fs::write(&legacy_path, LEGACY_SNIPPET).unwrap();
+    fixture.success(&["shell", "install"]);
+    assert_eq!(fs::read(&rc).unwrap(), rc_before);
+    assert_eq!(fs::read(manifest_path).unwrap(), manifest_before);
+    assert!(
+        fs::read_to_string(fixture.snippet())
+            .unwrap()
+            .contains("function opencode")
+    );
+    for shell in ["bash", "zsh"] {
+        let script = format!(
+            ". {}; . {}; opencode 'resumed session'; printf 'status:%s\\n' \"$?\"",
+            quote(&legacy_path),
+            quote(&fixture.snippet())
+        );
+        let output = fixture.shell(shell, &script, true);
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "opencode::99:/private/cookie:unset\narg:resumed session\nstatus:31\n"
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("ClipBridge:"));
+    }
+    fixture.success(&["shell", "uninstall"]);
+    assert_eq!(fs::read(rc).unwrap(), original);
+    assert!(!fixture.snippet().exists());
+    assert!(!fixture.path("never-started").exists());
+}
+
+#[test]
+fn legacy_snippet_can_be_removed_but_edited_legacy_is_preserved() {
+    for edited in [false, true] {
+        let fixture = Fixture::new();
+        fixture.success(&["shell", "install"]);
+        let bytes = format!(
+            "{LEGACY_SNIPPET}{}",
+            if edited { "# personal edit\n" } else { "" }
+        );
+        fs::write(fixture.snippet(), &bytes).unwrap();
+        if edited {
+            let rc_before = fs::read(fixture.path(".zshrc")).unwrap();
+            for action in ["install", "uninstall"] {
+                let output = fixture.run(&["shell", action]);
+                assert!(!output.status.success());
+                assert_eq!(fs::read_to_string(fixture.snippet()).unwrap(), bytes);
+                assert_eq!(fs::read(fixture.path(".zshrc")).unwrap(), rc_before);
+            }
+        } else {
+            fixture.success(&["shell", "uninstall"]);
+            assert!(!fixture.snippet().exists());
+            assert!(!fixture.path(".zshrc").exists());
+        }
     }
 }
 
@@ -257,12 +380,12 @@ fn hooks_activate_in_interactive_startup_files_without_starting_a_server() {
     fixture.success(&["shell", "install", "--shell", "zsh"]);
     for (shell, rc) in [("bash", ".bashrc"), ("bash", ".profile"), ("zsh", ".zshrc")] {
         let script = format!(
-            ". {}; typeset -f codex >/dev/null; typeset -f claude >/dev/null",
+            ". {}; typeset -f codex >/dev/null && typeset -f claude >/dev/null && typeset -f opencode >/dev/null",
             quote(&fixture.path(rc))
         );
         assert!(fixture.shell(shell, &script, true).status.success());
         let script = format!(
-            ". {}; typeset -f codex >/dev/null && exit 9; exit 0",
+            ". {}; typeset -f codex >/dev/null && exit 9; typeset -f opencode >/dev/null && exit 9; exit 0",
             quote(&fixture.path(rc))
         );
         assert!(fixture.shell(shell, &script, false).status.success());
@@ -383,6 +506,7 @@ fn init_and_unsupported_shell_validation_do_not_write_files_or_start_services() 
     let fixture = Fixture::new();
     let output = fixture.success(&["shell", "init"]);
     assert!(output.contains("function codex"));
+    assert!(output.contains("function opencode"));
     assert!(!fixture.snippet().exists());
     let output = fixture
         .command()

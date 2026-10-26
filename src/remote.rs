@@ -216,9 +216,9 @@ pub fn setup_with_shell(
     bytes.push(b'\n');
     atomic_write(config_path, &bytes, 0o600)?;
     let startup = if integrate_shell {
-        "Reconnect SSH once, then start codex or claude normally. Existing CLI processes need to be relaunched."
+        "Reconnect SSH once, then start codex, claude or opencode normally. Existing CLI processes need to be relaunched."
     } else {
-        "Manual startup selected. In your SSH terminal, launch with:\n  ~/.local/bin/clipbridge-remote run -- codex\n  ~/.local/bin/clipbridge-remote run -- claude"
+        "Manual startup selected. In your SSH terminal, launch with:\n  ~/.local/bin/clipbridge-remote run -- codex\n  ~/.local/bin/clipbridge-remote run -- claude\n  ~/.local/bin/clipbridge-remote run -- opencode"
     };
     Ok(format!(
         "{}{}Remote image clipboard enabled in {}.\nRestart local ClipBridge to load this setting.\n{}\nWait for the remote-ready notification before Ctrl+V.",
@@ -505,7 +505,7 @@ mod tests {
         let runner = Arc::new(Fake::default());
         let ctx = context(home.path(), runner.clone());
         let message = setup(&ctx, &path).unwrap();
-        assert!(message.contains("start codex or claude normally"));
+        assert!(message.contains("start codex, claude or opencode normally"));
         assert!(runner.calls.lock().unwrap().iter().any(|call| {
             call.args
                 .last()

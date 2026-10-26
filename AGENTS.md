@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-Last updated: 2026-10-24.
+Last updated: 2026-10-25.
 
 ## Project Structure & Module Organization
 
@@ -48,7 +48,7 @@ Use Conventional Commits targeting `master`. Describe behavior, rationale, valid
 
 Exclude credentials, personal settings, screenshots, logs and build output from packages. Preserve host-key checks, validation, ownership markers and MIT licensing. Removal retains user data and refuses unfamiliar files. Never install remote system packages automatically.
 
-SSH aliases in one configuration must reach the same machine, account and directory. Do not add broadcast uploads, cross-route job retries or connection probing to the session detector. Mac and companion versions may differ when the companion is unchanged and compatible.
+SSH aliases in one configuration must reach the same machine, account and directory. Do not add broadcast uploads, cross-route job retries or connection probing to the session detector. Mac and companion releases use separate versions; accept older running backends only through explicitly tested version pairs.
 
 Keep cached transports private and separate from user SSH sockets. Tool-owned connections must not authorize clipboard capture; close them before releasing the monitor lock.
 

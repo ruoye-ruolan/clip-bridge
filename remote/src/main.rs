@@ -80,6 +80,14 @@ struct Response {
     image_ready: bool,
 }
 
+fn compatible_server_version(version: &str) -> bool {
+    version == env!("CARGO_PKG_VERSION")
+        // 0.3.2 changes shell integration only; the 0.3.1 wire format and
+        // clipboard behavior are unchanged. Keep the exception version-paired
+        // so a future companion cannot silently inherit this compatibility.
+        || matches!((env!("CARGO_PKG_VERSION"), version), ("0.3.2", "0.3.1"))
+}
+
 impl Response {
     fn success(environment: &Environment, image_ready: bool) -> Self {
         Self {
@@ -302,7 +310,7 @@ impl State {
                 .unwrap_or_else(|| "remote clipboard operation failed".into())
         );
         ensure!(
-            matches!(request, Request::Stop) || response.version == env!("CARGO_PKG_VERSION"),
+            matches!(request, Request::Stop) || compatible_server_version(&response.version),
             "remote server version {} differs; run clipbridge-remote stop, then retry",
             response.version
         );

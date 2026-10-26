@@ -1,10 +1,10 @@
 # ClipBridge
 
-Last updated: 2026-10-24.
+Last updated: 2026-10-25.
 
 Copy an image on your Mac and keep pasting it as an image locally. ClipBridge uploads a copy over SSH and can make it available to a remote CLI through a private Linux image clipboard.
 
-ClipBridge 0.3.3 is implemented in Rust, including native macOS clipboard access. It remains compatible with the unchanged 0.3.1 Linux companion. The installed Mac program is one native executable with no language runtime requirement. Remote image pasting additionally needs Xvfb, xauth and xclip on the SSH host; see [remote image setup](docs/remote-images.md).
+ClipBridge 0.3.4 is implemented in Rust, including native macOS clipboard access, and bundles Linux companion 0.3.2. The installed Mac program is one native executable with no language runtime requirement. Remote image pasting additionally needs Xvfb, xauth and xclip on the SSH host; see [remote image setup](docs/remote-images.md).
 
 Image transfer and remote publication now use one SSH request. Subsequent images can reuse a private connection until it has been idle for 60 seconds, reducing repeated handshakes on public networks. See [transfer speed](docs/usage.md#transfer-speed) for timing and connection limits.
 
@@ -60,11 +60,15 @@ Setup installs shell integration for remote Bash or Zsh. Reconnect SSH once afte
 codex
 # Or:
 claude
+# Or:
+opencode
 ```
 
 Arguments work as usual, for example `codex resume`. The shell integration obtains the private clipboard connection for each launch without changing the parent shell's display settings. Existing aliases/functions are preserved; see the [manual fallback](docs/remote-images.md#manual-launch-and-custom-shells) if you see a conflict warning or your shell is unsupported.
 
-Copy a new image and wait for the remote-ready notification or log entry before using the CLI's image-paste shortcut. Exit existing CLI processes once and relaunch them after reconnecting. Ghostty keybindings are unchanged. Real Ghostty/CLI attachment acceptance testing remains pending.
+To add OpenCode to an existing installation, upgrade the Mac toolkit and rerun `clipbridge remote setup`, then reconnect SSH or reload the [shell integration](docs/remote-images.md#start-the-remote-cli). Companion 0.3.2 can keep using an already running 0.3.1 backend; this update does not require stopping that backend.
+
+Copy a new image and wait for the remote-ready notification or log entry before using the CLI's image-paste shortcut. Relaunch any CLI that was started without the integration so it receives the clipboard environment. Ghostty keybindings are unchanged. Real Ghostty/CLI attachment acceptance testing remains pending.
 
 ## Everyday Commands
 

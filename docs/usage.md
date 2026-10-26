@@ -1,6 +1,6 @@
 # ClipBridge Usage Guide
 
-Last updated: 2026-10-24.
+Last updated: 2026-10-25.
 
 ClipBridge monitors newly copied Mac images and uploads copies over SSH while leaving the Mac clipboard unchanged. Optional remote image support makes an uploaded image available to a CLI launched through the Linux companion. It has no application window or menu bar icon. See [installation](installation.md) and [remote image setup](remote-images.md).
 
@@ -81,7 +81,9 @@ Replace `dev-server` with your primary alias or an entry in `ssh_aliases`. `star
 
 Copy an image and paste it into a local application as usual. The Mac clipboard remains unchanged before, during and after upload. Paths such as `/home/example/.local/share/clipbridge/images/shot-UUID.png` are storage locations shown in logs, not clipboard replacements. Notifications are attempted; their visibility depends on macOS notification settings. Images from **all applications** can trigger uploads.
 
-For image attachments in an SSH CLI, complete [remote setup](remote-images.md), reconnect SSH once to load the Bash/Zsh integration, then run `codex` or `claude` normally inside the SSH terminal. Arguments such as `codex resume` work as usual. For custom shells or existing alias/function conflicts, use the [manual launch](remote-images.md#manual-launch-and-custom-shells). Wait for **remote image clipboard ready** before image paste. The remote clipboard holds the last successfully published image; copying Mac text does not clear it.
+For image attachments in an SSH CLI, complete [remote setup](remote-images.md), reconnect SSH once to load the Bash/Zsh integration, then run `codex`, `claude` or `opencode` normally inside the SSH terminal. Arguments such as `codex resume` work as usual. For custom shells or existing alias/function conflicts, use the [manual launch](remote-images.md#manual-launch-and-custom-shells). Wait for **remote image clipboard ready** before image paste. The remote clipboard holds the last successfully published image; copying Mac text does not clear it.
+
+OpenCode integration is included in Mac 0.3.4 with companion 0.3.2. Existing installations need `clipbridge remote setup` after the Mac upgrade, then a new SSH shell or a reload of the managed snippet. OpenCode processes started without the wrapper must be relaunched. See the [upgrade instructions](installation.md#upgrade-a-rust-installation).
 
 For a temporary foreground session with logs in the terminal, use `clipbridge run`. Stop it with Ctrl+C; queued uploads may delay exit. Foreground mode does not install a login service and cannot run alongside an existing monitor.
 

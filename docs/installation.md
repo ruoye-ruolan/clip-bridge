@@ -1,8 +1,8 @@
 # Installation, Upgrade and Removal
 
-Last updated: 2026-10-24.
+Last updated: 2026-10-25.
 
-ClipBridge 0.3.3 uses a native Rust executable. It installs into your user account without `sudo`, independently of the original checkout or extracted source package. Optional remote image paste uses a separately deployed Rust companion on the Linux/WSL host.
+ClipBridge 0.3.4 uses a native Rust executable. It installs into your user account without `sudo`, independently of the original checkout or extracted source package. Optional remote image paste uses a separately deployed Rust companion on the Linux/WSL host.
 
 ## Requirements
 
@@ -96,6 +96,8 @@ Version 0.3.1 adds remote Bash/Zsh integration: after `remote setup`, reconnect 
 Version 0.3.2 adds optional `ssh_aliases` for different routes to the same server. Existing JSON remains valid. Add alternatives as described in [multiple network routes](usage.md#multiple-network-routes), then reload monitoring. This Mac update retains the compatible 0.3.1 companion, so an existing companion installation does not need setup again.
 
 Version 0.3.3 combines image transfer and publication into one SSH request and privately reuses upload connections for up to 60 seconds of inactivity. The configuration format remains compatible, and the companion is still 0.3.1. The remote destination must now be owned by the SSH user and must not be group/other-writable; existing permissions are not changed automatically. Use a dedicated directory under the remote account when migrating from a shared location. Upgrade the Mac installation normally; a compatible companion does not need reinstallation for this performance change.
+
+Version 0.3.4 bundles companion 0.3.2 and adds automatic `opencode` startup alongside `codex` and `claude`. After upgrading the Mac, rerun `clipbridge remote setup` to upgrade the helper and its managed shell snippet, then reconnect SSH or source the updated snippet. An unchanged 0.3.1 snippet upgrades in place; edited snippets are refused without modification, and existing custom aliases/functions are preserved. Relaunch OpenCode if it was started without the wrapper. Companion 0.3.2 accepts the unchanged protocol of a running 0.3.1 backend, so this update does not require stopping Xvfb or relaunching already integrated CLIs.
 
 After upgrades that change the companion, rerun `remote setup`. If it detects an incompatible running backend, explicitly run `clipbridge remote stop`, repeat setup and relaunch remote CLIs. Companion deployment does not transparently replace a running backend and is separate from the Mac installer's versioned recovery process.
 

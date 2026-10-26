@@ -1,16 +1,20 @@
 # Image Paste in Local and SSH CLIs
 
-Last updated: 2026-10-24.
+Last updated: 2026-10-25.
 
-ClipBridge 0.3.3 leaves the Mac clipboard unchanged. Local applications continue receiving the original image. For an SSH CLI, enable the Linux companion and reconnect SSH once to load its Bash/Zsh integration. Then run `codex` or `claude` normally. The companion provides a private X11 image clipboard without changing Ghostty shortcuts or inserting a file path into the terminal.
+ClipBridge 0.3.4 leaves the Mac clipboard unchanged. Local applications continue receiving the original image. For an SSH CLI, enable the Linux companion and reconnect SSH once to load its Bash/Zsh integration. Then run `codex`, `claude` or `opencode` normally. The companion provides a private X11 image clipboard without changing Ghostty shortcuts or inserting a file path into the terminal.
 
 Versions before 0.3 replaced the Mac clipboard with an uploaded file path, which terminal text paste could transmit directly. Image paste needs the remote CLI to read actual image data. Version 0.3 introduced an explicit launch wrapper to supply that connection; 0.3.1 invokes it automatically through shell integration.
 
-The implementation and isolated regression tests are available. The real X11 image path has also been verified on WSL2; full attachment rendering and shortcut delivery in actual Ghostty, Codex and Claude Code sessions still need acceptance testing. CLI versions must support reading an image from the supplied Linux clipboard.
+The implementation and isolated regression tests are available. The real X11 image path has also been verified on WSL2; full attachment rendering and shortcut delivery in actual Ghostty, Codex, Claude Code and OpenCode sessions still need acceptance testing. CLI versions must support reading an image from the supplied Linux clipboard.
 
-Mac 0.3.2 added alternative SSH aliases. Mac 0.3.3 streams each image and publishes it in one SSH request, with private connection reuse for subsequent images. The Linux companion remains 0.3.1; an existing compatible companion does not need reinstallation for these updates.
+Mac 0.3.2 added alternative SSH aliases, and Mac 0.3.3 combined image transfer and publication into one SSH request with private connection reuse. Mac 0.3.4 bundles companion 0.3.2 to add OpenCode shell integration. This helper remains compatible with a running 0.3.1 clipboard backend.
 
 ## Validation Record
+
+On 2026-10-25, Mac toolkit 0.3.4 and companion 0.3.2 passed 153 automated tests, formatting and Clippy checks. New regression checks cover OpenCode argument and exit-status forwarding, scoped clipboard settings, alias/function conflicts, exact legacy snippet upgrades, and reuse of a compatible 0.3.1 backend while rejecting unknown versions.
+
+The helper and managed shell snippet were upgraded on WSL2 while the existing 0.3.1 backend and Xvfb processes stayed running. A fresh Zsh session loaded the `opencode` function, the explicit wrapper launched OpenCode 2.1.4's version command, and the private X11 clipboard advertised `image/png`. These deployment checks did not submit a prompt or verify attachment rendering in the OpenCode UI.
 
 On 2026-10-24, Mac toolkit 0.3.3 and companion 0.3.1 passed 148 automated tests, formatting and Clippy checks. A 262,548-byte synthetic PNG was transferred to a private WSL2 test directory: the old three-connection path took 17.904 seconds on its successful trial and timed out on another; the streamed path took 5.511 seconds for its first connection and 1.910 / 2.560 seconds when reused. This was a small, network-dependent transport comparison: publication was disabled for the new path, and the old path used a read-only helper status call as its final step. It does not measure clipboard publication or CLI rendering. All four successful files matched the source SHA-256 and were removed afterward.
 
@@ -31,7 +35,7 @@ On the configured SSH host, provide:
 - Rust 1.94+, Cargo and a native linker for companion installation/upgrades.
 - `xvfb-run`, `Xvfb`, `xauth` and `xclip` for operation.
 - Standard shell utilities and an accessible Linux `/proc` filesystem for image publication.
-- The CLI you want to run, such as `codex` or `claude`.
+- The CLI you want to run, such as `codex`, `claude` or `opencode`, available on the remote shell's PATH.
 
 Choose an image directory owned and writable by the SSH account, with no group/other write permission. Uploads create a missing directory privately, but preserve an existing directory's permissions and refuse an unsafe destination. See [destination configuration](usage.md#configure-the-destination).
 
@@ -57,6 +61,8 @@ clipbridge restart
 `remote setup` extracts the embedded companion source into a temporary directory and runs `cargo vendor --locked --respect-source-config` on the Mac. It uploads the source and vendored dependencies over SSH/SCP, runs `cargo build --release --frozen` offline on the SSH host, and installs a user-owned command. It then checks the X tools and any running backend's compatibility, installs remote Bash/Zsh integration and sets `"remote_clipboard": true` in the selected local JSON configuration.
 
 Setup preserves other JSON fields and does not start or restart monitoring. To keep manual wrapper launches or use an unsupported shell, run `clipbridge remote setup --no-shell`. This skips shell installation for that setup; it does not remove an existing integration. If dependencies are missing, install them remotely and rerun setup. The helper may already have been deployed, but the failed setup does not enable synchronization or change an existing configuration flag.
+
+When upgrading to Mac 0.3.4, rerun `remote setup` to install companion 0.3.2 and add OpenCode to the managed snippet. The exact unmodified 0.3.1 snippet upgrades safely; edited snippets are refused without modification. A running 0.3.1 backend can remain active, preserving its display and current image. Reload the shell integration and relaunch any OpenCode process that was started without it; already integrated CLIs do not need relaunching for this compatible update.
 
 For a custom configuration, use the same path for both commands:
 
@@ -89,9 +95,11 @@ Replace the alias with your configured `ssh_host` or an entry in `ssh_aliases`. 
 codex
 # Or:
 claude
+# Or:
+opencode
 ```
 
-Arguments work as usual, for example `codex resume`. The integration defines shell functions for these two command names, leaving their installed executables unchanged. Each launch obtains the current private clipboard connection and sets `DISPLAY` and `XAUTHORITY` only for the application, while clearing its `WAYLAND_DISPLAY`. The parent shell's display settings remain unchanged.
+Arguments work as usual, for example `codex resume`. The integration defines shell functions for these three command names, leaving their installed executables unchanged. Each launch obtains the current private clipboard connection and sets `DISPLAY` and `XAUTHORITY` only for the application, while clearing its `WAYLAND_DISPLAY`. The parent shell's display settings remain unchanged.
 
 To keep the current remote Bash/Zsh session, load the installed snippet once before launching the CLI:
 
@@ -103,12 +111,14 @@ If you use tmux, run that command inside the existing pane or create a new pane.
 
 ### Manual Launch and Custom Shells
 
-The explicit wrapper remains available for other applications, unsupported shells, or an existing `codex`/`claude` alias or function that the integration preserves:
+The explicit wrapper remains available for other applications, unsupported shells, or an existing `codex`/`claude`/`opencode` alias or function that the integration preserves:
 
 ```sh
 ~/.local/bin/clipbridge-remote run -- codex
 # Or:
 ~/.local/bin/clipbridge-remote run -- claude
+# Or:
+~/.local/bin/clipbridge-remote run -- opencode
 ```
 
 Arguments after the application name are passed directly to it. If the remote shell cannot find the application, use its actual absolute path, for example `~/.local/bin/clipbridge-remote run -- ~/.local/bin/codex` when that is where Codex is installed. Calling an application by its absolute path bypasses the shell function, so use the explicit wrapper in that case.
@@ -130,7 +140,7 @@ Installation adds a marked block to the selected startup files and stores the sn
 - Bash: `~/.bashrc` plus the first existing `~/.bash_profile`, `~/.bash_login` or `~/.profile`; it creates `.profile` if none exists.
 - `--rc-file`: only the given absolute file. Use this when your shell chooses a custom startup location that remote setup cannot detect.
 
-Existing startup files are backed up before changes. Repeated installation is safe. Removal preserves other startup content, CLI executables and `shell/backup-*` files. With no options, `shell uninstall` removes all tracked hooks; supply the same `--shell` or `--rc-file` options to remove only selected hooks. Symlinked or unfamiliar managed files are refused.
+Existing startup files are backed up before changes. Repeated installation is safe, and an exact older managed snippet can be upgraded without duplicating startup blocks. Removal preserves other startup content, CLI executables and `shell/backup-*` files. With no options, `shell uninstall` removes all tracked hooks; supply the same `--shell` or `--rc-file` options to remove only selected hooks. Edited snippets, symlinked files and unfamiliar managed files are refused.
 
 For a custom setup, select the shell and startup file explicitly:
 
@@ -173,9 +183,11 @@ If attachments do not appear, confirm the following:
 
 - The Mac monitor has reloaded a configuration containing `"remote_clipboard": true`.
 - A matching ordinary `ssh ALIAS` session remains open and the latest image has reached the remote-ready state.
-- The remote shell loaded the integration before launching the CLI, including inside tmux if used. Run `type codex` or `type claude`: a managed launch uses a shell function. If it resolves directly to a binary or a different custom function, reconnect/reload the integration or use the explicit wrapper.
+- The remote shell loaded the integration before launching the CLI, including inside tmux if used. Run `type codex`, `type claude` or `type opencode`: a managed launch uses a shell function. If it resolves directly to a binary or a different custom function, reconnect/reload the integration or use the explicit wrapper.
 - The CLI receives its image-paste shortcut; terminal text paste is a different operation.
 - The remote CLI supports the companion's X11 image clipboard in that environment. WSL-specific Windows clipboard behavior needs separate verification.
+
+If OpenCode shows no response to its image-paste shortcut while `remote status` reports `image ready`, first check `type opencode`. A process launched before the integration was loaded does not receive the private clipboard environment retroactively: exit it, source the snippet above and launch `opencode` again. Using an absolute executable path bypasses the shell function, so use the explicit wrapper for that form.
 
 Ghostty 1.3.0's release notes describe OSC 5522 parsing without implementation. This integration therefore uses SSH transfer and a remote clipboard, rather than relying on that terminal image-clipboard protocol. See [Ghostty release notes](https://ghostty.org/docs/install/release-notes/1-3-0). Clipboard behavior also depends on the application; consult the [Codex clipboard implementation](https://github.com/openai/codex/blob/main/codex-rs/tui/src/clipboard_paste.rs) and [Claude Code keyboard reference](https://code.claude.com/docs/en/interactive-mode) when diagnosing version-specific behavior.
 

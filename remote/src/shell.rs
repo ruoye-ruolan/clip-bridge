@@ -10,7 +10,8 @@ use std::path::{Component, Path, PathBuf};
 const MARKER: &[u8] = b"clipbridge-remote-shell-v1\n";
 const BEGIN: &str = "# >>> ClipBridge remote shell >>>";
 const END: &str = "# <<< ClipBridge remote shell <<<";
-const SNIPPET: &str = r#"# Managed by clipbridge-remote shell install. Do not edit.
+// Accept only the exact previous managed content when upgrading or removing it.
+const LEGACY_SNIPPET: &str = r#"# Managed by clipbridge-remote shell install. Do not edit.
 case $- in
     *i*)
         if [ "${_CLIPBRIDGE_CODEX_WRAPPED-}" != 1 ]; then
@@ -32,10 +33,40 @@ case $- in
         ;;
 esac
 "#;
+const SNIPPET: &str = r#"# Managed by clipbridge-remote shell install. Do not edit.
+case $- in
+    *i*)
+        if [ "${_CLIPBRIDGE_CODEX_WRAPPED-}" != 1 ]; then
+            if alias codex >/dev/null 2>&1 || typeset -f codex >/dev/null 2>&1; then
+                printf '%s\n' 'ClipBridge: keeping your existing codex alias/function; use clipbridge-remote run -- codex explicitly.' >&2
+            else
+                function codex { "$HOME/.local/bin/clipbridge-remote" run -- codex "$@"; }
+                _CLIPBRIDGE_CODEX_WRAPPED=1
+            fi
+        fi
+        if [ "${_CLIPBRIDGE_CLAUDE_WRAPPED-}" != 1 ]; then
+            if alias claude >/dev/null 2>&1 || typeset -f claude >/dev/null 2>&1; then
+                printf '%s\n' 'ClipBridge: keeping your existing claude alias/function; use clipbridge-remote run -- claude explicitly.' >&2
+            else
+                function claude { "$HOME/.local/bin/clipbridge-remote" run -- claude "$@"; }
+                _CLIPBRIDGE_CLAUDE_WRAPPED=1
+            fi
+        fi
+        if [ "${_CLIPBRIDGE_OPENCODE_WRAPPED-}" != 1 ]; then
+            if alias opencode >/dev/null 2>&1 || typeset -f opencode >/dev/null 2>&1; then
+                printf '%s\n' 'ClipBridge: keeping your existing opencode alias/function; use clipbridge-remote run -- opencode explicitly.' >&2
+            else
+                function opencode { "$HOME/.local/bin/clipbridge-remote" run -- opencode "$@"; }
+                _CLIPBRIDGE_OPENCODE_WRAPPED=1
+            fi
+        fi
+        ;;
+esac
+"#;
 
 #[derive(Subcommand)]
 pub enum Action {
-    /// Enable direct codex/claude commands in new interactive shells.
+    /// Enable direct codex/claude/opencode commands in new interactive shells.
     Install(Options),
     /// Remove managed startup hooks while preserving other shell configuration.
     Uninstall(Options),
@@ -352,7 +383,7 @@ fn metadata(
     };
     if let Some(snapshot) = &snippet {
         ensure!(
-            snapshot.bytes == SNIPPET.as_bytes(),
+            snapshot.bytes == SNIPPET.as_bytes() || snapshot.bytes == LEGACY_SNIPPET.as_bytes(),
             "managed shell snippet was modified; restore init.sh before continuing"
         );
         ensure!(manifest.is_some(), "refusing untracked shell snippet");
@@ -463,7 +494,7 @@ fn install(options: Options) -> Result<()> {
         }
     }
     println!(
-        "Shell integration installed. Open a new SSH shell, then run codex or claude normally."
+        "Shell integration installed. Open a new SSH shell, then run codex, claude or opencode normally."
     );
     println!("For this shell: . {}", quote(&directory.join("init.sh")));
     Ok(())
