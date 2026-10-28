@@ -70,38 +70,74 @@ pub fn active_host(ctx: &Context, config: &Config) -> Option<String> {
         .map(str::to_owned)
 }
 
+struct Process {
+    pid: u32,
+    ppid: u32,
+    uid: u32,
+    command: String,
+}
+
+/// Take a leading number; ps aligns numeric columns with variable whitespace.
+fn split_number(text: &str) -> Option<(u32, &str)> {
+    let (number, rest) = text.trim_start().split_once(char::is_whitespace)?;
+    Some((number.parse().ok()?, rest.trim_start()))
+}
+
+fn parse_process(line: &str) -> Option<Process> {
+    let (pid, rest) = split_number(line)?;
+    let (ppid, rest) = split_number(rest)?;
+    let (uid, command) = split_number(rest)?;
+    Some(Process {
+        pid,
+        ppid,
+        uid,
+        command: command.to_owned(),
+    })
+}
+
+/// A session reaching its host through ProxyCommand or ProxyJump leaves the TCP
+/// socket with a helper it started, so the session's descendants are probed too.
+fn with_descendants(processes: &[Process], uid: u32, roots: Vec<u32>) -> Vec<u32> {
+    let mut pids = roots;
+    let mut next = 0;
+    while let Some(&parent) = pids.get(next) {
+        next += 1;
+        let children: Vec<u32> = processes
+            .iter()
+            .filter(|process| {
+                process.uid == uid && process.ppid == parent && !pids.contains(&process.pid)
+            })
+            .map(|process| process.pid)
+            .collect();
+        pids.extend(children);
+    }
+    pids
+}
+
 fn connected_inner(ctx: &Context, host: &str) -> Result<bool> {
     // These probes also run while draining uploads after cancellation.
     let listing = ctx.exec(
         CommandSpec::new("/bin/ps")
-            .args(["-axo", "pid=,uid=,args="])
+            .args(["-axo", "pid=,ppid=,uid=,args="])
             .uncancellable(),
     )?;
-    let mut pids = Vec::new();
-    for line in listing.stdout.lines() {
-        let mut fields = line.trim().splitn(3, char::is_whitespace);
-        let Some(pid) = fields.next().filter(|pid| pid.parse::<u32>().is_ok()) else {
-            continue;
-        };
-        // ps aligns numeric columns with variable whitespace.
-        let rest = line.trim_start()[pid.len()..].trim_start();
-        let mut rest = rest.splitn(2, char::is_whitespace);
-        let Some(uid) = rest.next().and_then(|uid| uid.parse::<u32>().ok()) else {
-            continue;
-        };
-        let Some(command) = rest.next() else {
-            continue;
-        };
-        if uid == ctx.uid
-            && shell_words::split(command.trim_start()).is_ok_and(|args| is_session(&args, host))
-        {
-            pids.push(pid.to_owned());
-        }
-    }
-    if pids.is_empty() {
+    let processes: Vec<Process> = listing.stdout.lines().filter_map(parse_process).collect();
+    let sessions: Vec<u32> = processes
+        .iter()
+        .filter(|process| {
+            process.uid == ctx.uid
+                && shell_words::split(&process.command).is_ok_and(|args| is_session(&args, host))
+        })
+        .map(|process| process.pid)
+        .collect();
+    if sessions.is_empty() {
         return Ok(false);
     }
-    let pids = pids.join(",");
+    let pids = with_descendants(&processes, ctx.uid, sessions)
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     let sockets = ctx.exec(
         CommandSpec::new("/usr/sbin/lsof")
             .args([
@@ -557,7 +593,7 @@ mod tests {
                         String::new()
                     } else {
                         self.listing.lock().unwrap().clone().unwrap_or_else(|| {
-                            " 42  501  ssh dev-server\n43  502  ssh dev-server\n44 501 ssh elsewhere\n".into()
+                            " 42  1  501  ssh dev-server\n43  1  502  ssh dev-server\n44 1 501 ssh elsewhere\n".into()
                         })
                     };
                 }
@@ -786,6 +822,51 @@ mod tests {
     }
 
     #[test]
+    fn connection_counts_sockets_held_by_proxy_descendants_of_a_session() {
+        // ProxyCommand/ProxyJump helpers own the TCP socket; the session holds only pipes.
+        for (listing, socket_pid, probed) in [
+            (
+                "1224 1036 501 ssh dev-server\n1225 1224 501 /usr/bin/nc 192.0.2.1 22\n",
+                "1225",
+                "1224,1225",
+            ),
+            (
+                "1224 1036 501 ssh dev-server\n1225 1224 501 /bin/sh -c helper\n\
+                 1226 1225 501 /usr/bin/nc 192.0.2.1 22\n",
+                "1226",
+                "1224,1225,1226",
+            ),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let runner = Arc::new(FakeRunner::default());
+            let ctx = context(home.path(), runner.clone());
+            *runner.listing.lock().unwrap() = Some(listing.into());
+            *runner.socket_pids.lock().unwrap() = Some(vec![socket_pid.into()]);
+            assert!(connected(&ctx, "dev-server"), "{listing}");
+            assert_eq!(runner.calls.lock().unwrap()[1].args[3], probed);
+        }
+    }
+
+    #[test]
+    fn connection_ignores_sockets_outside_the_session_process_tree() {
+        let home = tempfile::tempdir().unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let ctx = context(home.path(), runner.clone());
+        // An unrelated child, another user's child of the session, the session's own
+        // parent shell and the child of a session for a different alias never qualify.
+        *runner.listing.lock().unwrap() = Some(
+            "1224 1036 501 ssh dev-server\n1230 1500 501 /usr/bin/nc 192.0.2.1 22\n\
+             1231 1224 502 /usr/bin/nc 192.0.2.1 22\n1036 1 501 -zsh\n\
+             1240 1 501 ssh elsewhere\n1241 1240 501 /usr/bin/nc 192.0.2.1 22\n"
+                .into(),
+        );
+        *runner.socket_pids.lock().unwrap() =
+            Some(["1230", "1231", "1036", "1241"].map(String::from).to_vec());
+        assert!(!connected(&ctx, "dev-server"));
+        assert_eq!(runner.calls.lock().unwrap()[1].args[3], "1224");
+    }
+
+    #[test]
     fn active_host_preserves_primary_and_selects_live_aliases_in_order() {
         let home = tempfile::tempdir().unwrap();
         let runner = Arc::new(FakeRunner::default());
@@ -794,7 +875,7 @@ mod tests {
         assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-server"));
         config.ssh_aliases = vec!["dev-lan".into(), "dev-ipv6".into()];
         *runner.listing.lock().unwrap() =
-            Some("42 501 ssh dev-server\n45 501 ssh dev-lan\n46 501 ssh dev-ipv6\n".into());
+            Some("42 1 501 ssh dev-server\n45 1 501 ssh dev-lan\n46 1 501 ssh dev-ipv6\n".into());
         *runner.socket_pids.lock().unwrap() = Some(vec!["42".into(), "45".into(), "46".into()]);
         assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-server"));
         *runner.socket_pids.lock().unwrap() = Some(vec!["45".into(), "46".into()]);
@@ -811,7 +892,7 @@ mod tests {
         let mut config = config();
         config.ssh_aliases = vec!["dev-lan".into()];
         *runner.listing.lock().unwrap() =
-            Some("42 502 ssh dev-server\n45 501 ssh dev-lan\n46 501 ssh elsewhere\n".into());
+            Some("42 1 502 ssh dev-server\n45 1 501 ssh dev-lan\n46 1 501 ssh elsewhere\n".into());
         *runner.socket_pids.lock().unwrap() = Some(vec!["42".into(), "46".into()]);
         assert!(active_host(&ctx, &config).is_none());
         let calls = runner.calls.lock().unwrap();
@@ -831,7 +912,7 @@ mod tests {
         let mut config = config();
         config.ssh_aliases = vec!["dev-lan".into()];
         config.remote_clipboard = true;
-        *runner.listing.lock().unwrap() = Some("45 501 ssh dev-lan\n".into());
+        *runner.listing.lock().unwrap() = Some("45 1 501 ssh dev-lan\n".into());
         *runner.socket_pids.lock().unwrap() = Some(vec!["45".into()]);
         let image = capture(&ctx, &config, &FakeClipboard::default(), 10)
             .unwrap()
@@ -839,7 +920,7 @@ mod tests {
         assert_eq!(image.ssh_host, "dev-lan");
         // Queue delay can change which host has priority, but not this image's route.
         *runner.listing.lock().unwrap() =
-            Some("42 501 ssh dev-server\n45 501 ssh dev-lan\n".into());
+            Some("42 1 501 ssh dev-server\n45 1 501 ssh dev-lan\n".into());
         *runner.socket_pids.lock().unwrap() = Some(vec!["42".into(), "45".into()]);
         assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-server"));
         runner.calls.lock().unwrap().clear();
@@ -888,7 +969,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let path = image.path.clone();
-        *runner.listing.lock().unwrap() = Some("45 501 ssh dev-lan\n".into());
+        *runner.listing.lock().unwrap() = Some("45 1 501 ssh dev-lan\n".into());
         *runner.socket_pids.lock().unwrap() = Some(vec!["45".into()]);
         assert_eq!(active_host(&ctx, &config).as_deref(), Some("dev-lan"));
         runner.calls.lock().unwrap().clear();
@@ -926,7 +1007,7 @@ mod tests {
         assert!(matches!(outcome, UploadOutcome::Uploaded { .. }));
         finish_upload(outcome);
 
-        *runner.listing.lock().unwrap() = Some("45 501 ssh dev-lan\n".into());
+        *runner.listing.lock().unwrap() = Some("45 1 501 ssh dev-lan\n".into());
         *runner.socket_pids.lock().unwrap() = Some(vec!["45".into()]);
         let mut alternate = captured(&ctx);
         alternate.ssh_host = "dev-lan".into();
@@ -983,7 +1064,7 @@ mod tests {
         config.ssh_aliases = vec!["dev-lan".into()];
         config.remote_clipboard = true;
         *runner.listing.lock().unwrap() =
-            Some("42 501 ssh dev-server\n45 501 ssh dev-lan\n".into());
+            Some("42 1 501 ssh dev-server\n45 1 501 ssh dev-lan\n".into());
         *runner.socket_pids.lock().unwrap() = Some(vec!["42".into(), "45".into()]);
         runner.fail_transfer.store(true, Ordering::SeqCst);
         let outcome = upload(&ctx, &config, captured(&ctx));
@@ -1003,7 +1084,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let runner = Arc::new(FakeRunner::default());
         *runner.listing.lock().unwrap() =
-            Some("x 501 ssh dev-server\n42 invalid ssh dev-server\n42 501 ssh 'unclosed\n".into());
+            Some("x 1 501 ssh dev-server\n42 x 501 ssh dev-server\n42 1 invalid ssh dev-server\n42 1 501 ssh 'unclosed\n".into());
         let mut ctx = context(home.path(), runner);
         assert!(!connected(&ctx, "dev-server"));
         struct FailingRunner;

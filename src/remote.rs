@@ -595,7 +595,7 @@ mod tests {
                     stdout: self
                         .active_alias
                         .as_ref()
-                        .map(|host| format!("42 501 ssh {host}\n"))
+                        .map(|host| format!("42 1 501 ssh {host}\n"))
                         .unwrap_or_default(),
                     stderr: String::new(),
                 });
