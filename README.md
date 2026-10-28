@@ -4,21 +4,21 @@ Last updated: 2026-10-25.
 
 Copy a screenshot on your Mac and paste it as an image into a Linux or WSL2 CLI over SSH. ClipBridge keeps the original Mac clipboard image and publishes a copy to a private remote image clipboard.
 
-**ClipBridge 0.4.0** bundles Linux companion 0.3.2. Install a native Mac package or use the Claude Code plugin for guided setup; neither path needs Rust or Cargo. Source builds and local assets remain available for [development and offline installation](docs/installation.md).
+**ClipBridge 0.4.1** bundles Linux companion 0.3.2. Install a native Mac package or use the Claude Code plugin for guided setup; neither path needs Rust or Cargo. Source builds and local assets remain available for [development and offline installation](docs/installation.md).
 
 ## Install and Set Up on Your Mac
 
-Download the matching Mac archive and its `.sha256` file from [ClipBridge 0.4.0](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.0):
+Download the matching Mac archive and its `.sha256` file from [ClipBridge 0.4.1](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.1):
 
-- Apple Silicon: `clipbridge-0.4.0-aarch64-apple-darwin.tar.gz`
-- Intel: `clipbridge-0.4.0-x86_64-apple-darwin.tar.gz`
+- Apple Silicon: `clipbridge-0.4.1-aarch64-apple-darwin.tar.gz`
+- Intel: `clipbridge-0.4.1-x86_64-apple-darwin.tar.gz`
 
 For Apple Silicon, run from the download directory:
 
 ```sh
-shasum -a 256 -c clipbridge-0.4.0-aarch64-apple-darwin.tar.gz.sha256
-tar -xzf clipbridge-0.4.0-aarch64-apple-darwin.tar.gz
-cd clipbridge-0.4.0-aarch64-apple-darwin
+shasum -a 256 -c clipbridge-0.4.1-aarch64-apple-darwin.tar.gz.sha256
+tar -xzf clipbridge-0.4.1-aarch64-apple-darwin.tar.gz
+cd clipbridge-0.4.1-aarch64-apple-darwin
 ./install.sh
 export PATH="$HOME/.local/bin:$PATH"
 clipbridge setup

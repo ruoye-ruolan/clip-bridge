@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-25.
 
-ClipBridge 0.4.0 leaves the Mac clipboard unchanged. Local applications continue receiving the original image. For an SSH CLI, enable the Linux companion and reconnect SSH once to load its Bash/Zsh integration. Then run `codex`, `claude` or `opencode` normally. The companion provides a private X11 image clipboard without changing Ghostty shortcuts or inserting a file path into the terminal.
+ClipBridge 0.4.1 leaves the Mac clipboard unchanged. Local applications continue receiving the original image. For an SSH CLI, enable the Linux companion and reconnect SSH once to load its Bash/Zsh integration. Then run `codex`, `claude` or `opencode` normally. The companion provides a private X11 image clipboard without changing Ghostty shortcuts or inserting a file path into the terminal.
 
 Versions before 0.3 replaced the Mac clipboard with an uploaded file path, which terminal text paste could transmit directly. Image paste needs the remote CLI to read actual image data. Version 0.3 introduced an explicit launch wrapper to supply that connection; 0.3.1 invokes it automatically through shell integration.
 
@@ -67,7 +67,7 @@ Choose an SSH alias, accept the remote-home image directory or provide another, 
 clipbridge setup --host dev-server --start
 ```
 
-This checks the destination and Linux architecture, downloads the matching prebuilt companion and SHA-256 sidecar on the Mac, uploads the verified binary over SSH, installs Bash/Zsh integration, enables remote publication and applies the selected startup setting. Downloads are pinned to the Mac toolkit's exact GitHub release tag. ClipBridge 0.4.0 uses the companion assets attached to its [release](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.0); see [offline assets](installation.md#local-assets-and-offline-installation) for local development or restricted download access.
+This checks the destination and Linux architecture, downloads the matching prebuilt companion and SHA-256 sidecar on the Mac, uploads the verified binary over SSH, installs Bash/Zsh integration, enables remote publication and applies the selected startup setting. Downloads are pinned to the Mac toolkit's exact GitHub release tag. ClipBridge 0.4.1 uses the companion assets attached to its [release](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.1); see [offline assets](installation.md#local-assets-and-offline-installation) for local development or restricted download access.
 
 Use `--no-start` instead of `--start` to leave monitoring stopped and disable existing managed login startup. Use `--no-shell` to keep explicit wrapper launches; it does not remove hooks already installed. See [setup options and failure handling](usage.md#one-time-setup).
 

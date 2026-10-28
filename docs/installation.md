@@ -2,9 +2,9 @@
 
 Last updated: 2026-10-25.
 
-ClipBridge 0.4.0 installs a native executable into your Mac user account, independently of the checkout or plugin cache. Its Linux companion is version 0.3.2 and supports ordinary Linux servers and WSL2.
+ClipBridge 0.4.1 installs a native executable into your Mac user account, independently of the checkout or plugin cache. Its Linux companion is version 0.3.2 and supports ordinary Linux servers and WSL2.
 
-Native Mac packages, Linux companion binaries and checksums are provided with [ClipBridge 0.4.0](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.0). Trusted local assets and source builds are supported as alternatives.
+Native Mac packages, Linux companion binaries and checksums are provided with [ClipBridge 0.4.1](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.1). Trusted local assets and source builds are supported as alternatives.
 
 ## Requirements
 
@@ -19,19 +19,19 @@ Use a verified SSH alias with noninteractive authentication. Configuration, SSH 
 
 ## Native Installation
 
-Download your Mac archive and its checksum from the [0.4.0 release](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.0).
+Download your Mac archive and its checksum from the [0.4.1 release](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.1).
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon | `clipbridge-0.4.0-aarch64-apple-darwin.tar.gz` |
-| Intel | `clipbridge-0.4.0-x86_64-apple-darwin.tar.gz` |
+| Apple Silicon | `clipbridge-0.4.1-aarch64-apple-darwin.tar.gz` |
+| Intel | `clipbridge-0.4.1-x86_64-apple-darwin.tar.gz` |
 
 For Apple Silicon:
 
 ```sh
-shasum -a 256 -c clipbridge-0.4.0-aarch64-apple-darwin.tar.gz.sha256
-tar -xzf clipbridge-0.4.0-aarch64-apple-darwin.tar.gz
-cd clipbridge-0.4.0-aarch64-apple-darwin
+shasum -a 256 -c clipbridge-0.4.1-aarch64-apple-darwin.tar.gz.sha256
+tar -xzf clipbridge-0.4.1-aarch64-apple-darwin.tar.gz
+cd clipbridge-0.4.1-aarch64-apple-darwin
 ./install.sh
 export PATH="$HOME/.local/bin:$PATH"
 clipbridge setup
@@ -47,7 +47,7 @@ The standalone `install-release.sh` from the trusted matching tag or plugin auto
 sh ./install-release.sh --setup
 ```
 
-Without `--setup`, it installs only. It is pinned to 0.4.0, refuses a downgrade of a newer managed Mac installation, and stops on missing assets or checksum failures. It does not silently compile source or select a different release.
+Without `--setup`, it installs only. It is pinned to 0.4.1, refuses a downgrade of a newer managed Mac installation, and stops on missing assets or checksum failures. It does not silently compile source or select a different release.
 
 To use another prefix, pass `--prefix "$HOME/tools"` to either installer. Add the resulting `bin` directory to PATH. The Mac installer does not edit shell startup files; remote shell integration is configured separately by setup.
 
@@ -101,7 +101,7 @@ To upgrade an older installation that does not understand native bundles, run `.
 
 After upgrading, use `clipbridge setup` to configure both hosts and the desired startup setting. To update only the configured remote companion/integration, use `clipbridge remote setup`; it does not reload the Mac monitor. Default setup downloads the companion attached to the Mac's exact release tag, even when the companion's own version differs.
 
-Mac 0.4.0 retains companion 0.3.2. The helper accepts a running 0.3.1 backend through an explicit compatibility pair, so that backend and already integrated CLIs can remain running. Unknown backend versions are refused. If setup reports an incompatible backend, explicitly stop it with `clipbridge remote stop`, repeat setup, then relaunch remote CLIs.
+Mac 0.4.1 retains companion 0.3.2. The helper accepts a running 0.3.1 backend through an explicit compatibility pair, so that backend and already integrated CLIs can remain running. Unknown backend versions are refused. If setup reports an incompatible backend, explicitly stop it with `clipbridge remote stop`, repeat setup, then relaunch remote CLIs.
 
 OpenCode automatic shell integration was introduced in Mac 0.3.4 with companion 0.3.2. The exact older managed snippet upgrades in place; edited snippets are refused without modification, and custom aliases/functions are preserved. Reconnect SSH or source the updated snippet, then relaunch an OpenCode process that was started without integration.
 

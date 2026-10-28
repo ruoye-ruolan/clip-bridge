@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-25.
 
-Status: Current release is Mac 0.4.0 with Linux companion 0.3.2, which also accepts a running 0.3.1 backend. Native packages, Mac-side setup and the Claude Code plugin provide the onboarding flow. Actual terminal/CLI attachment and broader platform validation remain distinct acceptance work. Planned work below is not shipped functionality.
+Status: Current release is Mac 0.4.1 with Linux companion 0.3.2, which also accepts a running 0.3.1 backend. Native packages, Mac-side setup and the Claude Code plugin provide the onboarding flow. Actual terminal/CLI attachment and broader platform validation remain distinct acceptance work. Planned work below is not shipped functionality.
 
 See the [project overview](../../README.md), [usage guide](../usage.md) and [implementation guide](../../src/README.md) for current behavior and development instructions.
 

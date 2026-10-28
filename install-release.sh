@@ -1,7 +1,7 @@
 #!/bin/sh
 # Standalone Mac installer for the pinned official release. No language runtime is required.
 set -eu
-version=0.4.0
+version=0.4.1
 assets_dir=
 prefix="$HOME/.local"
 setup=false
@@ -14,7 +14,7 @@ while [ "$#" -gt 0 ]; do
         --setup) setup=true; shift ;;
         --help|-h)
             printf '%s\n' 'Usage: install-release.sh [--assets-dir DIRECTORY] [--prefix DIRECTORY] [--setup]' \
-                'Installs ClipBridge 0.4.0 for this Mac. --setup opens the local/remote configuration wizard.'
+                'Installs ClipBridge 0.4.1 for this Mac. --setup opens the local/remote configuration wizard.'
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac

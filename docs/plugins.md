@@ -4,7 +4,7 @@ Last updated: 2026-10-25.
 
 The ClipBridge plugin provides guided setup, status and diagnostics. The native Mac program and Linux companion perform image synchronization; the plugin does not replace them or implement image paste inside an agent.
 
-The plugin installs the native Mac package pinned to [ClipBridge 0.4.0](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.0). For offline or development installation, use [trusted local assets](installation.md#local-assets-and-offline-installation).
+The plugin installs the native Mac package pinned to [ClipBridge 0.4.1](https://github.com/ruoye-ruolan/clip-bridge/releases/tag/v0.4.1). For offline or development installation, use [trusted local assets](installation.md#local-assets-and-offline-installation).
 
 ## Install on the Source Mac
 
