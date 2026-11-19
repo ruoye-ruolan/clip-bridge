@@ -31,6 +31,7 @@ Use [`../clipbridge`](../clipbridge) during development and [`../install.sh`](..
 | `../remote/src/shell.rs` | Managed Bash/Zsh startup integration for ordinary `codex`, `claude` and `opencode` launches |
 | `../install-release.sh` | Pinned native Mac bootstrap with architecture and checksum validation |
 | `../scripts/package-native.sh` | Native Mac archives and Linux executable/checksum packaging |
+| `../.github/workflows/ci.yml` | Format, lint and tests for both crates on pushes and pull requests to `master` |
 | `../.github/workflows/release.yml` | Four-platform builds and draft-only release attachment |
 | `../.claude-plugin/`, `../skills/` | Claude Code marketplace metadata and setup/status/doctor skills |
 
